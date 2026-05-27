@@ -1,0 +1,273 @@
+@import "tailwindcss";
+
+/* =========================================================================
+   Guesty Design System — Colors & Type
+   Source: Guesty Brand Book 2026 + Social Media Templates Figma
+   ========================================================================= */
+
+/* PP Right Grotesk — large display numerals */
+@font-face {
+  font-family: 'PP Right Grotesk';
+  font-weight: 500;
+  font-style: normal;
+  src: url('fonts/PPRightGrotesk-Medium.woff2') format('woff2'),
+       url('fonts/PPRightGrotesk-Medium.woff') format('woff'),
+       url('fonts/PPRightGrotesk-Medium.otf') format('opentype'),
+       url('fonts/PPRightGrotesk-Medium.ttf') format('truetype');
+  font-display: swap;
+}
+
+/* Figtree — primary brand face */
+@font-face {
+  font-family: 'Figtree';
+  font-weight: 300;
+  font-style: normal;
+  src: url('fonts/Figtree-Light.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Figtree';
+  font-weight: 300;
+  font-style: italic;
+  src: url('fonts/Figtree-LightItalic.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Figtree';
+  font-weight: 400;
+  font-style: normal;
+  src: url('fonts/Figtree-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Figtree';
+  font-weight: 400;
+  font-style: italic;
+  src: url('fonts/Figtree-Italic.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Figtree';
+  font-weight: 500;
+  font-style: normal;
+  src: url('fonts/Figtree-Medium.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Figtree';
+  font-weight: 500;
+  font-style: italic;
+  src: url('fonts/Figtree-MediumItalic.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Figtree';
+  font-weight: 600;
+  font-style: normal;
+  src: url('fonts/Figtree-SemiBold.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Figtree';
+  font-weight: 600;
+  font-style: italic;
+  src: url('fonts/Figtree-SemiBoldItalic.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Figtree';
+  font-weight: 700;
+  font-style: normal;
+  src: url('fonts/Figtree-Bold.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Figtree';
+  font-weight: 700;
+  font-style: italic;
+  src: url('fonts/Figtree-BoldItalic.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Figtree';
+  font-weight: 800;
+  font-style: normal;
+  src: url('fonts/Figtree-ExtraBold.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Figtree';
+  font-weight: 800;
+  font-style: italic;
+  src: url('fonts/Figtree-ExtraBoldItalic.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Figtree';
+  font-weight: 900;
+  font-style: normal;
+  src: url('fonts/Figtree-Black.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Figtree';
+  font-weight: 900;
+  font-style: italic;
+  src: url('fonts/Figtree-BlackItalic.ttf') format('truetype');
+  font-display: swap;
+}
+
+/* Copernicus — italic emphasis inside headlines. Also available upright. */
+@font-face {
+  font-family: 'Copernicus';
+  font-weight: 400;
+  font-style: normal;
+  src: url('fonts/Copernicus-Book.otf') format('opentype'),
+       url('fonts/Copernicus-Book.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Copernicus';
+  font-weight: 400;
+  font-style: italic;
+  src: url('fonts/Copernicus-BookItalic.otf') format('opentype'),
+       url('fonts/Copernicus-BookItalic.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Copernicus';
+  font-weight: 500;
+  font-style: normal;
+  src: url('fonts/Copernicus-Medium.otf') format('opentype'),
+       url('fonts/Copernicus-Medium.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Copernicus';
+  font-weight: 500;
+  font-style: italic;
+  src: url('fonts/Copernicus-MediumItalic.otf') format('opentype'),
+       url('fonts/Copernicus-MediumItalic.ttf') format('truetype');
+  font-display: swap;
+}
+
+@theme {
+  --font-sans: 'Figtree', system-ui, -apple-system, sans-serif;
+  --font-emph: 'Copernicus', 'Playfair Display', Georgia, serif;
+  --font-display: 'PP Right Grotesk', 'Archivo Black', sans-serif;
+  --font-mono: ui-monospace, monospace;
+
+  /* Brand Colors map */
+  --color-forest: #072C23;
+  --color-nature: #14665F;
+  --color-teal: #8CBEBE;
+  --color-ice: #BCE5E5;
+  --color-icesoft: #D5F2F2;
+  --color-lemon: #EEFAD0;
+
+  --color-night: #0E0740;
+  --color-ocean: #5071E6;
+  --color-powder: #9EBCFF;
+  --color-cloud: #EBF0FF;
+
+  --color-merlot: #5F1632;
+  --color-coral: #FA877D;
+  --color-peach: #FFB6AD;
+  --color-blush: #FFE3E3;
+
+  --color-cream: #F7F5F2;
+  --color-beige: #E9E2D5;
+  --color-paper: #EFECE6;
+}
+
+:root {
+  /* ---- Primary palette ---- */
+  --c-forest:       #072C23; /* deep anchor, dark-mode base */
+  --c-nature:       #14665F; /* primary brand green */
+  --c-teal:         #8CBEBE; /* mid-tone bridge */
+  --c-ice:          #BCE5E5; /* airy highlight */
+  --c-ice-soft:     #D5F2F2; /* figma-observed softer ice */
+  --c-lemon:        #EEFAD0; /* accent only */
+
+  /* ---- Secondary: blues ---- */
+  --c-night:        #0E0740;
+  --c-ocean:        #5071E6;
+  --c-powder:       #9EBCFF;
+  --c-cloud:        #EBF0FF;
+
+  /* ---- Secondary: reds ---- */
+  --c-merlot:       #5F1632;
+  --c-coral:        #FA877D;
+  --c-peach:        #FFB6AD;
+  --c-blush:        #FFE3E3;
+
+  /* ---- Neutrals ---- */
+  --c-black:        #101010;
+  --c-white:        #FFFFFF;
+  --c-beige:        #E9E2D5; /* warm paper */
+  --c-cream:        #F7F5F2; /* DEFAULT light surface — NOT pure white */
+  --c-paper:        #EFECE6; /* tag / chip background */
+
+  /* ---- Semantic (light) ---- */
+  --bg:             var(--c-cream);
+  --bg-elevated:    var(--c-white);
+  --bg-sunken:      var(--c-beige);
+  --fg:             var(--c-black);
+  --fg-muted:       #3E382F;
+  --fg-inverse:     var(--c-cream);
+  --brand:          var(--c-nature);
+  --brand-deep:     var(--c-forest);
+  --accent:         var(--c-lemon);
+  --stroke:         rgba(16,16,16,0.10);
+  --stroke-strong:  rgba(16,16,16,0.22);
+}
+
+/* Set general structure to NOT support dark mode, always default light cream style */
+body {
+  background-color: var(--c-cream);
+  color: var(--c-black);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Semantic typography classes for consistency */
+.t-display-xl { font-family: var(--font-sans); font-weight: 500; font-size: 110px; line-height: 1.2; letter-spacing: -0.005em; color: var(--c-black); }
+.t-display-l  { font-family: var(--font-sans); font-weight: 500; font-size: 82px;  line-height: 1.2; letter-spacing: -0.005em; }
+.t-display-m  { font-family: var(--font-sans); font-weight: 500; font-size: 68px;  line-height: 1.2; letter-spacing: -0.01em; }
+.t-h1 { font-family: var(--font-sans); font-weight: 500; font-size: 52px; line-height: 1.3; letter-spacing: -0.01em; }
+.t-h2 { font-family: var(--font-sans); font-weight: 500; font-size: 40px; line-height: 1.3; letter-spacing: -0.01em; }
+.t-h3 { font-family: var(--font-sans); font-weight: 500; font-size: 32px; line-height: 1.3; }
+.t-h4 { font-family: var(--font-sans); font-weight: 500; font-size: 24px; line-height: 1.3; }
+.t-body-l { font-family: var(--font-sans); font-weight: 400; font-size: 20px; line-height: 1.46; letter-spacing: -0.02em; }
+.t-body   { font-family: var(--font-sans); font-weight: 400; font-size: 16px;   line-height: 1.46; letter-spacing: -0.02em; }
+.t-body-s { font-family: var(--font-sans); font-weight: 400; font-size: 14px; line-height: 1.46; }
+
+/* Copernicus-style italic emphasis */
+.t-emph { font-family: var(--font-emph); font-style: italic; font-weight: 500; letter-spacing: 0; }
+
+/* PP Right Grotesk-style display numerals */
+.t-numeral { font-family: var(--font-display); font-weight: 400; line-height: 0.7; letter-spacing: -0.04em; }
+
+/* Small tracked tag */
+.t-tag { font-family: var(--font-sans); font-weight: 700; font-size: 14px; text-transform: uppercase; letter-spacing: 0.02em; }
+
+/* Caption / utility */
+.t-caption { font-family: var(--font-sans); font-weight: 400; font-size: 12px; letter-spacing: 0.02em; }
+.t-mono    { font-family: var(--font-mono); font-size: 13px; letter-spacing: 0; }
+
+/* Tag chip */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 15px;
+  border-radius: 7px;
+  background: var(--c-paper);
+  color: #3E382F;
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
