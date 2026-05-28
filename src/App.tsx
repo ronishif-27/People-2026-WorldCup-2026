@@ -61,6 +61,7 @@ interface ApiUser {
   fullName: string;
   department: string;
   site: string;
+  avatarUrl: string | null;     // HiBob avatar (signed Cloudinary URL) or Google picture
   role: 'USER' | 'ADMIN';
   termsAccepted: boolean;
   hasParticipated: boolean;
@@ -628,9 +629,19 @@ export default function App() {
                   <Star className="w-2.5 h-2.5 text-amber-500 fill-amber-500" /> PRO
                 </span>
               </div>
-              <div className="w-9 h-9 bg-gradient-to-tr from-[#14665F] to-[#072C23] rounded-full flex items-center justify-center text-white font-black text-xs border border-white shrink-0 shadow-sm">
-                {currentUser.fullName.split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase()}
-              </div>
+              {currentUser.avatarUrl ? (
+                <img
+                  src={currentUser.avatarUrl}
+                  alt={currentUser.fullName}
+                  referrerPolicy="no-referrer"
+                  onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                  className="w-9 h-9 rounded-full object-cover border border-white shrink-0 shadow-sm"
+                />
+              ) : (
+                <div className="w-9 h-9 bg-gradient-to-tr from-[#14665F] to-[#072C23] rounded-full flex items-center justify-center text-white font-black text-xs border border-white shrink-0 shadow-sm">
+                  {currentUser.fullName.split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase()}
+                </div>
+              )}
             </div>
           </div>
         </header>

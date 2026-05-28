@@ -27,6 +27,7 @@ model User {
   // Synced from HiBob on every login
   department      String    @default("Unknown")
   site            String    @default("Unknown")
+  avatarUrl       String?                       // Signed Cloudinary URL from HiBob; null = use Google picture or initials
 
   // Access control — values: "USER" | "ADMIN"
   role            String    @default("USER")

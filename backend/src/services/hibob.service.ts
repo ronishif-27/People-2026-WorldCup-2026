@@ -31,6 +31,8 @@ export interface HiBobEmployeeData {
   site: string;
   /** Always null for this service user — caller uses Google name as fallback */
   fullName: string | null;
+  /** Signed Cloudinary URL valid ~2 months; refreshed on every login */
+  avatarUrl: string | null;
 }
 
 // ─── Auth header ──────────────────────────────────────────────────────────────
@@ -116,7 +118,7 @@ export async function getEmployeeByEmail(
     const response = await axios.post<{ employees: HiBobEmployee[] }>(
       `${HIBOB_BASE_URL}/people/search`,
       {
-        fields: ['work.department', 'work.site'],
+        fields: ['work.department', 'work.site', 'about.avatar'],
         filters: [
           {
             // Only root.id and root.email are supported as filter paths in HiBob
@@ -144,20 +146,22 @@ export async function getEmployeeByEmail(
     }
 
     const employee = employees[0];
-    const rawDept = employee.work?.department ?? null;
-    const site    = employee.work?.site ?? null;
+    const rawDept   = employee.work?.department ?? null;
+    const site      = employee.work?.site ?? null;
+    const avatarUrl = employee.about?.avatar ?? null;
 
     // Resolve department ID → human-readable name
     const department = rawDept ? await resolveDepartmentName(rawDept) : null;
 
     console.info(
-      `[HiBob] Employee found: ${email} | dept="${department ?? 'null'}" (raw: "${rawDept}") | site="${site ?? 'null'}"`
+      `[HiBob] Employee found: ${email} | dept="${department ?? 'null'}" (raw: "${rawDept}") | site="${site ?? 'null'}" | avatar=${avatarUrl ? 'yes' : 'no'}`
     );
 
     return {
       department: department || 'Unknown',
       site:       site       || 'Unknown',
       fullName:   null, // service user has no access to personal fields; use Google name instead
+      avatarUrl,
     };
   } catch (err) {
     const axiosErr = err as AxiosError;
@@ -239,6 +243,10 @@ interface HiBobEmployee {
   work?: {
     department?: string;
     site?: string;
+  };
+  about?: {
+    /** Signed Cloudinary URL — query token expires ~2 months out */
+    avatar?: string;
   };
 }
 

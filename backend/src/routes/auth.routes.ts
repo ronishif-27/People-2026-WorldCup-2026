@@ -155,23 +155,28 @@ authRouter.get('/callback', async (req: Request, res: Response): Promise<void> =
     // ── Step 4: Upsert user in database ──────────────────────────────────────
     const isAdmin = adminEmails.has(email);
 
+    // Prefer HiBob avatar; fall back to Google profile picture
+    const avatarUrl = hibobData?.avatarUrl ?? googleUser.picture ?? null;
+
     const user = await prisma.user.upsert({
       where: { email },
       update: {
-        // Refresh from HiBob and Google on every login to catch name/dept changes
-        fullName: hibobData?.fullName ?? googleUser.name ?? email.split('@')[0],
-        googleId: googleUser.sub,
+        // Refresh from HiBob and Google on every login to catch name/dept/avatar changes
+        fullName:   hibobData?.fullName ?? googleUser.name ?? email.split('@')[0],
+        googleId:   googleUser.sub,
         department: hibobData?.department ?? 'Unknown',
-        site: hibobData?.site ?? 'Unknown',
+        site:       hibobData?.site ?? 'Unknown',
+        avatarUrl,                                    // refreshed every login (HiBob URLs expire ~2 months)
         // Promote to ADMIN if listed in ADMIN_EMAILS env var (never demote)
         ...(isAdmin ? { role: 'ADMIN' as const } : {}),
       },
       create: {
         email,
-        fullName: hibobData?.fullName ?? googleUser.name ?? email.split('@')[0],
-        googleId: googleUser.sub,
+        fullName:   hibobData?.fullName ?? googleUser.name ?? email.split('@')[0],
+        googleId:   googleUser.sub,
         department: hibobData?.department ?? 'Unknown',
-        site: hibobData?.site ?? 'Unknown',
+        site:       hibobData?.site ?? 'Unknown',
+        avatarUrl,
         role: isAdmin ? 'ADMIN' : 'USER',
       },
     });
@@ -216,6 +221,7 @@ authRouter.get('/me', requireAuth, async (req: Request, res: Response): Promise<
         fullName: true,
         department: true,
         site: true,
+        avatarUrl: true,
         role: true,
         termsAcceptedAt: true,
         hasParticipated: true,
@@ -310,7 +316,7 @@ authRouter.post('/onboarding', requireAuth, async (req: Request, res: Response):
       prisma.user.update({
         where: { id: req.user!.userId },
         data: { department, site, termsAcceptedAt: now },
-        select: { id: true, email: true, fullName: true, department: true, site: true, role: true },
+        select: { id: true, email: true, fullName: true, department: true, site: true, avatarUrl: true, role: true },
       }),
       prisma.termsAcceptance.create({
         data: {
