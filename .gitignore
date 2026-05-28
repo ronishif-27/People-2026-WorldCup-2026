@@ -1,0 +1,21 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+
+# Environment files — never commit real secrets
+.env*
+!.env.example
+backend/.env.example
+
+# SQLite local dev database
+backend/prisma/dev.db
+backend/prisma/dev.db-journal
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Claude plan files
+.claude/plans/

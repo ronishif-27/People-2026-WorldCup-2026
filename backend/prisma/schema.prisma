@@ -1,0 +1,170 @@
+// Guesty World Cup 2026 — Database Schema
+// Managed via Prisma Migrate. Run: npx prisma migrate dev
+//
+// NOTE: provider is "sqlite" for local dev.
+// Change to "postgresql" (and restore native enum/Json fields) before deploying.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // "sqlite" for local dev (no PostgreSQL install needed).
+  // Change to "postgresql" before deploying to Cloud Run / Cloud SQL.
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── MODELS ───────────────────────────────────────────────────────────────────
+// Enums are represented as String in SQLite. TypeScript types enforce the values.
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  fullName        String
+  googleId        String?   @unique
+
+  // Synced from HiBob on every login
+  department      String    @default("Unknown")
+  site            String    @default("Unknown")
+
+  // Access control — values: "USER" | "ADMIN"
+  role            String    @default("USER")
+
+  // Game state
+  termsAcceptedAt DateTime?               // NULL = T&C not yet accepted
+  hasParticipated Boolean   @default(false) // true once first prediction saved
+
+  // Audit
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  predictions      Prediction[]
+  scores           Score[]
+  outrights        OutrightPrediction?
+  termsAcceptances TermsAcceptance[]
+  notifications    Notification[]
+
+  @@map("users")
+}
+
+model Match {
+  id          String   @id @default(cuid())
+  externalId  String?  @unique   // football-data.org match ID
+
+  teamA       String
+  teamB       String
+  flagA       String   @default("🏳️")
+  flagB       String   @default("🏳️")
+
+  kickoffAt   DateTime              // UTC kickoff — governs prediction lock
+  venue       String
+  city        String
+  // Stage values: GROUP_STAGE | ROUND_OF_32 | ROUND_OF_16 | QUARTERFINALS | SEMIFINALS | FINAL
+  stage       String   @default("GROUP_STAGE")
+  // Status values: UPCOMING | LOCKED | LIVE | FINISHED
+  status      String   @default("UPCOMING")
+
+  // Populated once match is LIVE or FINISHED
+  scoreA      Int?
+  scoreB      Int?
+  minute      String?  // e.g. "74'" — only when LIVE
+
+  // Audit
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  predictions Prediction[]
+  scores      Score[]
+
+  @@map("matches")
+}
+
+model Prediction {
+  id              String   @id @default(cuid())
+  userId          String
+  matchId         String
+
+  predictedScoreA Int
+  predictedScoreB Int
+  firstGoalRange  String?  // e.g. "16 - 30'"
+
+  isSafePick      Boolean  @default(false)
+  submittedAt     DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  score Score?
+
+  // One prediction per user per match — enforced at DB level
+  @@unique([userId, matchId])
+  @@map("predictions")
+}
+
+model OutrightPrediction {
+  id                  String   @id @default(cuid())
+  userId              String   @unique
+
+  topScorer           String?           // Golden Boot player name
+  mostRedCardsTeam    String?           // Country name
+  totalHeadedGoals    Int?
+  timeOfFirstGoal     String?           // Time range e.g. "1 - 15'"
+
+  submittedAt         DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("outright_predictions")
+}
+
+model Score {
+  id           String   @id @default(cuid())
+  predictionId String   @unique
+  userId       String
+  matchId      String
+  points       Int
+  // Type values: EXACT | WINNER | MISS | BONUS | OUTRIGHT
+  type         String
+  createdAt    DateTime @default(now())
+
+  prediction Prediction @relation(fields: [predictionId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  match      Match      @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@map("scores")
+}
+
+model TermsAcceptance {
+  id         String   @id @default(cuid())
+  userId     String
+  acceptedAt DateTime @default(now())
+  ipAddress  String?
+  version    Int      @default(1)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("terms_acceptances")
+}
+
+model Notification {
+  id          String    @id @default(cuid())
+  // Type values: ANNOUNCEMENT | REMINDER | POST_MATCH_RANKINGS | SAFE_PICK_APPLIED
+  type        String
+  recipientId String?   // NULL = sent to all (bulk announcement)
+  // Channel values: EMAIL | SLACK
+  channel     String
+  // Status values: QUEUED | SENT | FAILED
+  status      String    @default("QUEUED")
+  metadata    String?   // JSON string — use JSON.parse/stringify in code
+  sentAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  recipient User? @relation(fields: [recipientId], references: [id], onDelete: SetNull)
+
+  @@map("notifications")
+}

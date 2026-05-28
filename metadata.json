@@ -1,0 +1,8 @@
+{
+  "name": "Remix: World Cup 2026 - Guesty",
+  "description": "",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
