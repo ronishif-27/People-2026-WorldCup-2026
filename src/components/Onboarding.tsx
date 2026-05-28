@@ -8,62 +8,23 @@
  * On success → calls onComplete({ department, site }) so App updates in-memory user.
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Trophy, CheckCircle, ChevronDown, Loader2 } from 'lucide-react';
 
-// ─── Data lists ───────────────────────────────────────────────────────────────
-
-const DEPARTMENTS = [
-  'AI Team',
-  'Customer Experience',
-  'Customer Success',
-  'Data & Information Systems',
-  'Engineering',
-  'Finance',
-  'G&A',
-  'Guest Communication Services',
-  'IS',
-  'Legal',
-  'Marketing',
-  'Onboarding',
-  'Operations',
-  'Payments',
-  'People',
-  'Product',
-  'Product Design',
-  'Professional Services',
-  'R&D',
-  'RU G&A',
-  'RU R&D',
-  'Sales',
-  'StaySense Tech',
-  'Strategy',
+// Fallback lists — used if the /api/auth/lists fetch fails
+const FALLBACK_DEPARTMENTS = [
+  'AI','Customer Experience','Customer Success','Data & Information Systems',
+  'Engineering','Finance','G&A','Guest Communication Services','Legal',
+  'Marketing','Onboarding','Operations','Payments','People','Product',
+  'Product Design','Professional Services','R&D','RU G&A','Sales',
+  'StaySense Tech','Strategy',
 ];
 
-const SITES = [
-  'Australia',
-  'Canada',
-  'Colombia',
-  'Dubai',
-  'France',
-  'Ireland',
-  'Israel',
-  'Mexico',
-  'Netherlands',
-  'Panama',
-  'Philippines',
-  'Poland',
-  'Portugal',
-  'Remote',
-  'Spain',
-  'Sweden',
-  'Switzerland',
-  'Turkey',
-  'UK',
-  'Ukraine',
-  'US - East',
-  'US - West',
+const FALLBACK_SITES = [
+  'Australia','Canada','Colombia','Dubai','France','Ireland','Israel','Mexico',
+  'Netherlands','Panama','Philippines','Poland','Portugal','Remote','Spain',
+  'Sweden','Switzerland','Turkey','UK','Ukraine','US - East','US - West',
 ];
 
 const TERMS_TEXT = `Welcome to the Guessy by Guesty!
@@ -87,6 +48,11 @@ interface OnboardingProps {
 const API_URL = import.meta.env.VITE_API_URL ?? '';
 
 export default function Onboarding({ currentUser, authToken, onComplete }: OnboardingProps) {
+  // Live lists from HiBob — loaded on mount
+  const [departments, setDepartments] = useState<string[]>(FALLBACK_DEPARTMENTS);
+  const [sites, setSites]             = useState<string[]>(FALLBACK_SITES);
+  const [listsLoading, setListsLoading] = useState(true);
+
   // Pre-select HiBob data if available, otherwise leave blank so user must pick
   const [department, setDepartment] = useState<string>(
     currentUser.department !== 'Unknown' ? currentUser.department : ''
@@ -97,6 +63,27 @@ export default function Onboarding({ currentUser, authToken, onComplete }: Onboa
   const [termsChecked, setTermsChecked] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Fetch live department + site lists from HiBob via backend
+  useEffect(() => {
+    fetch(`${API_URL}/api/auth/lists`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    })
+      .then((r) => r.ok ? r.json() : Promise.reject(r.status))
+      .then((data: { departments: string[]; sites: string[] }) => {
+        if (data.departments?.length) setDepartments(data.departments);
+        if (data.sites?.length)       setSites(data.sites);
+        // Re-validate pre-selected values against fresh lists
+        if (currentUser.department !== 'Unknown' && data.departments?.includes(currentUser.department)) {
+          setDepartment(currentUser.department);
+        }
+        if (currentUser.site !== 'Unknown' && data.sites?.includes(currentUser.site)) {
+          setSite(currentUser.site);
+        }
+      })
+      .catch(() => { /* keep fallback lists */ })
+      .finally(() => setListsLoading(false));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const canSubmit = department && site && termsChecked && !submitting;
 
@@ -171,14 +158,20 @@ export default function Onboarding({ currentUser, authToken, onComplete }: Onboa
               <select
                 value={department}
                 onChange={(e) => setDepartment(e.target.value)}
-                className="w-full appearance-none px-4 py-3 bg-white border-2 border-slate-200 rounded-2xl text-sm font-semibold text-slate-800 focus:outline-none focus:border-[#14665F] transition-colors cursor-pointer pr-10"
+                disabled={listsLoading}
+                className="w-full appearance-none px-4 py-3 bg-white border-2 border-slate-200 rounded-2xl text-sm font-semibold text-slate-800 focus:outline-none focus:border-[#14665F] transition-colors cursor-pointer pr-10 disabled:opacity-50"
               >
-                <option value="" disabled>Select your department…</option>
-                {DEPARTMENTS.map((d) => (
+                <option value="" disabled>
+                  {listsLoading ? 'Loading departments…' : 'Select your department…'}
+                </option>
+                {departments.map((d) => (
                   <option key={d} value={d}>{d}</option>
                 ))}
               </select>
-              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+              {listsLoading
+                ? <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 animate-spin" />
+                : <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+              }
             </div>
           </div>
 
@@ -191,14 +184,20 @@ export default function Onboarding({ currentUser, authToken, onComplete }: Onboa
               <select
                 value={site}
                 onChange={(e) => setSite(e.target.value)}
-                className="w-full appearance-none px-4 py-3 bg-white border-2 border-slate-200 rounded-2xl text-sm font-semibold text-slate-800 focus:outline-none focus:border-[#14665F] transition-colors cursor-pointer pr-10"
+                disabled={listsLoading}
+                className="w-full appearance-none px-4 py-3 bg-white border-2 border-slate-200 rounded-2xl text-sm font-semibold text-slate-800 focus:outline-none focus:border-[#14665F] transition-colors cursor-pointer pr-10 disabled:opacity-50"
               >
-                <option value="" disabled>Select your office…</option>
-                {SITES.map((s) => (
+                <option value="" disabled>
+                  {listsLoading ? 'Loading offices…' : 'Select your office…'}
+                </option>
+                {sites.map((s) => (
                   <option key={s} value={s}>{s}</option>
                 ))}
               </select>
-              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+              {listsLoading
+                ? <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 animate-spin" />
+                : <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+              }
             </div>
           </div>
 

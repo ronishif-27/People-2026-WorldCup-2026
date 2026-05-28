@@ -21,8 +21,8 @@ import { OAuth2Client } from 'google-auth-library';
 import crypto from 'crypto';
 import { prisma } from '../db/prisma.js';
 import { signToken } from '../services/jwt.service.js';
-import { getEmployeeByEmail } from '../services/hibob.service.js';
-import { requireAuth } from '../middleware/auth.middleware.js';
+import { getEmployeeByEmail, getHiBobDepartments, getHiBobSites } from '../services/hibob.service.js';
+import { requireAuth, requireAdmin } from '../middleware/auth.middleware.js';
 import { config, adminEmails } from '../config.js';
 
 export const authRouter = Router();
@@ -244,21 +244,30 @@ authRouter.get('/me', requireAuth, async (req: Request, res: Response): Promise<
   }
 });
 
-// ─── Route 4: Onboarding — save dept/site + accept T&C ───────────────────────
+// ─── Route 4a: Lists — departments + sites for onboarding dropdowns ───────────
 
-const VALID_DEPARTMENTS = new Set([
-  'AI Team','Customer Experience','Customer Success','Data & Information Systems',
-  'Engineering','Finance','G&A','Guest Communication Services','IS','Legal',
-  'Marketing','Onboarding','Operations','Payments','People','Product',
-  'Product Design','Professional Services','R&D','RU G&A','RU R&D','Sales',
-  'StaySense Tech','Strategy',
-]);
+/**
+ * GET /api/auth/lists
+ * Protected — requires Bearer token.
+ *
+ * Returns the live HiBob department and site lists (cached 1 h).
+ * The onboarding modal fetches this to populate its dropdowns dynamically,
+ * ensuring the options always reflect HiBob's source-of-truth data.
+ */
+authRouter.get('/lists', requireAuth, async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const [departments, sites] = await Promise.all([
+      getHiBobDepartments(),
+      getHiBobSites(),
+    ]);
+    res.json({ departments, sites });
+  } catch (err) {
+    console.error('[Auth] /lists error:', err);
+    res.status(500).json({ error: 'SERVER_ERROR', message: 'Failed to fetch dropdown lists.' });
+  }
+});
 
-const VALID_SITES = new Set([
-  'Australia','Canada','Colombia','Dubai','France','Ireland','Israel','Mexico',
-  'Netherlands','Panama','Philippines','Poland','Portugal','Remote','Spain',
-  'Sweden','Switzerland','Turkey','UK','Ukraine','US - East','US - West',
-]);
+// ─── Route 4b: Onboarding — save dept/site + accept T&C ──────────────────────
 
 /**
  * POST /api/auth/onboarding
@@ -273,17 +282,23 @@ const VALID_SITES = new Set([
 authRouter.post('/onboarding', requireAuth, async (req: Request, res: Response): Promise<void> => {
   const { department, site } = req.body as { department?: string; site?: string };
 
-  if (!department || !site) {
+  if (!department?.trim() || !site?.trim()) {
     res.status(400).json({ error: 'MISSING_FIELDS', message: 'department and site are required.' });
     return;
   }
 
-  if (!VALID_DEPARTMENTS.has(department)) {
+  // Validate against live HiBob lists (source of truth)
+  const [validDepts, validSites] = await Promise.all([
+    getHiBobDepartments(),
+    getHiBobSites(),
+  ]);
+
+  if (validDepts.length > 0 && !validDepts.includes(department)) {
     res.status(400).json({ error: 'INVALID_DEPARTMENT', message: `"${department}" is not a valid department.` });
     return;
   }
 
-  if (!VALID_SITES.has(site)) {
+  if (validSites.length > 0 && !validSites.includes(site)) {
     res.status(400).json({ error: 'INVALID_SITE', message: `"${site}" is not a valid site.` });
     return;
   }
@@ -318,7 +333,45 @@ authRouter.post('/onboarding', requireAuth, async (req: Request, res: Response):
   }
 });
 
-// ─── Route 5: Logout ─────────────────────────────────────────────────────────
+// ─── Route 5: HiBob connection test (admin only) ─────────────────────────────
+
+/**
+ * GET /api/auth/hibob-test
+ * Protected — requires Bearer token + ADMIN role.
+ *
+ * Query params:
+ *   ?email=someone@guesty.com  (optional — defaults to the calling user's email)
+ *
+ * Returns the raw HiBob data for the given email so we can verify field mapping
+ * without going through a full login cycle.
+ *
+ * Example:
+ *   curl -H "Authorization: Bearer <jwt>" \
+ *        "http://localhost:8080/api/auth/hibob-test?email=roni.shif@guesty.com"
+ */
+authRouter.get('/hibob-test', requireAuth, requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const email = (req.query.email as string | undefined) ?? req.user!.email;
+
+  try {
+    const hibobData = await getEmployeeByEmail(email);
+
+    if (!hibobData) {
+      res.status(404).json({
+        success: false,
+        email,
+        message: 'No employee found in HiBob for this email, or the API call failed. Check server logs for details.',
+      });
+      return;
+    }
+
+    res.json({ success: true, email, hibobData });
+  } catch (err) {
+    console.error('[Auth] /hibob-test error:', err);
+    res.status(500).json({ success: false, error: 'SERVER_ERROR', message: String(err) });
+  }
+});
+
+// ─── Route 6: Logout ─────────────────────────────────────────────────────────
 
 /**
  * POST /api/auth/logout

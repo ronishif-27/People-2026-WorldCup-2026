@@ -14,6 +14,7 @@ import { config } from './config.js';
 import { authRouter } from './routes/auth.routes.js';
 import { matchesRouter } from './routes/matches.routes.js';
 import { syncMatchesFromApi, hasLiveMatches } from './services/football.service.js';
+import { warmDepartmentCache } from './services/hibob.service.js';
 import { prisma } from './db/prisma.js';
 
 const app = express();
@@ -124,6 +125,10 @@ async function start(): Promise<void> {
     console.log(`   Frontend URL: ${config.FRONTEND_URL}`);
     console.log(`   Auth URL    : http://localhost:${config.PORT}/api/auth/google\n`);
   });
+
+  // ── HiBob department cache warm-up ────────────────────────────────────────
+  // Pre-loads the department ID→name map so the first login has no extra latency.
+  warmDepartmentCache().catch((e) => console.warn('[HiBob] Cache warm-up failed:', e));
 
   // ── Football data sync ────────────────────────────────────────────────────
   // Sync once at startup so the DB has fresh data immediately.
