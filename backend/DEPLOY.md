@@ -165,7 +165,7 @@ gcloud run deploy worldcup-backend \
   --set-env-vars="FIRESTORE_DATABASE_ID=worldcup-2026-people-team" \
   --set-env-vars="FRONTEND_URL=${FRONTEND_URL}" \
   --set-env-vars="JWT_EXPIRES_IN=24h" \
-  --set-env-vars="ADMIN_EMAILS=yeela@guesty.com,olga.stempin@guesty.com" \
+  --set-env-vars="ADMIN_EMAILS=roni.shif@guesty.com,yeela.tal@guesty.com,olga.stempin@guesty.com" \
   --set-env-vars="GOOGLE_CALLBACK_URL=https://<filled-after-first-deploy>/api/auth/callback" \
   --set-secrets="JWT_SECRET=JWT_SECRET:latest" \
   --set-secrets="GOOGLE_CLIENT_ID=GOOGLE_CLIENT_ID:latest" \

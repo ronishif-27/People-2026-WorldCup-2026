@@ -41,7 +41,7 @@ The shape of every variable is documented in [`.env.example`](./.env.example).
 | --- | --- |
 | `FIREBASE_PROJECT_ID` | `ai-innovation-484111` |
 | `FIRESTORE_DATABASE_ID` | `worldcup-2026-people-team` |
-| `ADMIN_EMAILS` | comma-separated — at minimum `roni.shif@guesty.com` |
+| `ADMIN_EMAILS` | `roni.shif@guesty.com,yeela.tal@guesty.com,olga.stempin@guesty.com` |
 | `JWT_EXPIRES_IN` | `24h` |
 | `NODE_ENV` | `production` |
 | `FRONTEND_URL` | Confirm with Roni once frontend is hosted (likely a Firebase Hosting URL or `worldcup.guesty.com`) |
