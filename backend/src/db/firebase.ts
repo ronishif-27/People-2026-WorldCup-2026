@@ -36,7 +36,10 @@ function initFirebase(): App {
 export function getDb(): Firestore {
   if (!_db) {
     _app = initFirebase();
-    _db  = getFirestore(_app);
+    // If FIRESTORE_DATABASE_ID is set (e.g. "worldcup"), target that named
+    // database explicitly. Otherwise fall back to the project's "(default)".
+    const dbId = process.env.FIRESTORE_DATABASE_ID;
+    _db = dbId ? getFirestore(_app, dbId) : getFirestore(_app);
   }
   return _db;
 }

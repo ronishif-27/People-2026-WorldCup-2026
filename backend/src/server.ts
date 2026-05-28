@@ -66,11 +66,13 @@ async function start(): Promise<void> {
     process.exit(1);
   }
 
-  app.listen(config.PORT, () => {
-    console.log(`\n🚀 Worldcup API running at http://localhost:${config.PORT}`);
+  // Bind to 0.0.0.0 — required for Cloud Run, harmless locally
+  app.listen(config.PORT, '0.0.0.0', () => {
+    const dbId = process.env.FIRESTORE_DATABASE_ID ?? '(default)';
+    console.log(`\n🚀 Worldcup API listening on 0.0.0.0:${config.PORT}`);
     console.log(`   Environment : ${config.NODE_ENV}`);
     console.log(`   Frontend URL: ${config.FRONTEND_URL}`);
-    console.log(`   DB          : Firestore (ai-innovation-484111)\n`);
+    console.log(`   Firestore   : ${config.FIREBASE_PROJECT_ID} / ${dbId}\n`);
   });
 
   warmDepartmentCache().catch(e => console.warn('[HiBob] Cache warm-up failed:', e));
