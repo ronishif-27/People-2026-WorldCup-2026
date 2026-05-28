@@ -1,78 +1,74 @@
 /**
- * routes/matches.routes.ts
+ * routes/matches.routes.ts — Firestore edition
  *
- * Serves World Cup match data from the local database (synced from football-data.org).
- *
- * Endpoints:
- *   GET  /api/matches          → All 104 WC matches, ordered by kick-off time
- *   GET  /api/matches/live     → Only currently LIVE matches
- *   POST /api/matches/sync     → Admin-only: force a fresh pull from football-data.org
+ * GET  /api/matches        — all matches ordered by kickoff
+ * GET  /api/matches/live   — LIVE matches only
+ * POST /api/matches/sync   — force-sync from football-data.org [ADMIN]
+ * PATCH /api/matches/:id   — admin score/status override [ADMIN]
  */
 
 import { Router, Request, Response } from 'express';
+import { db, C } from '../db/firebase.js';
+import { getAllMatches, getLiveMatches, syncMatchesFromApi } from '../services/football.service.js';
+import { scoreMatch } from '../services/scoring.service.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.middleware.js';
-import {
-  getAllMatches,
-  getLiveMatches,
-  syncMatchesFromApi,
-} from '../services/football.service.js';
 
 export const matchesRouter = Router();
 
-// ─── GET /api/matches ─────────────────────────────────────────────────────────
-
-/**
- * Returns all World Cup matches sorted by kick-off time.
- * Requires a valid user session (any role).
- */
-matchesRouter.get('/', requireAuth, async (_req: Request, res: Response): Promise<void> => {
+matchesRouter.get('/', requireAuth, async (_req, res) => {
   try {
-    const matches = await getAllMatches();
-    res.json({ matches, count: matches.length });
+    res.json(await getAllMatches());
   } catch (err) {
     console.error('[Matches] GET / error:', err);
-    res.status(500).json({ error: 'SERVER_ERROR', message: 'Failed to fetch matches.' });
+    res.status(500).json({ error: 'SERVER_ERROR' });
   }
 });
 
-// ─── GET /api/matches/live ────────────────────────────────────────────────────
-
-/**
- * Returns only matches currently in LIVE status.
- * Useful for the frontend to poll for live score updates.
- */
-matchesRouter.get('/live', requireAuth, async (_req: Request, res: Response): Promise<void> => {
+matchesRouter.get('/live', requireAuth, async (_req, res) => {
   try {
-    const matches = await getLiveMatches();
-    res.json({ matches, count: matches.length });
+    res.json(await getLiveMatches());
   } catch (err) {
-    console.error('[Matches] GET /live error:', err);
-    res.status(500).json({ error: 'SERVER_ERROR', message: 'Failed to fetch live matches.' });
+    res.status(500).json({ error: 'SERVER_ERROR' });
   }
 });
 
-// ─── POST /api/matches/sync ───────────────────────────────────────────────────
-
-/**
- * Admin-only: triggers an immediate sync from football-data.org.
- * The server also runs this automatically on startup and on a schedule.
- */
-matchesRouter.post(
-  '/sync',
-  requireAuth,
-  requireAdmin,
-  async (_req: Request, res: Response): Promise<void> => {
-    try {
-      console.info('[Matches] Manual sync triggered by admin');
-      const result = await syncMatchesFromApi();
-      res.json({
-        success: true,
-        message: `Sync complete — ${result.synced} matches updated, ${result.errors} errors`,
-        ...result,
-      });
-    } catch (err) {
-      console.error('[Matches] POST /sync error:', err);
-      res.status(500).json({ error: 'SERVER_ERROR', message: 'Sync failed.' });
-    }
+matchesRouter.post('/sync', requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    const result = await syncMatchesFromApi();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: 'SERVER_ERROR' });
   }
-);
+});
+
+// Admin override: update score/status and re-run scoring if FINISHED
+matchesRouter.patch('/:id', requireAuth, requireAdmin, async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params;
+  const { scoreA, scoreB, status, minute } = req.body as {
+    scoreA?: number; scoreB?: number; status?: string; minute?: string | null;
+  };
+
+  const matchRef = db.collection(C.MATCHES).doc(id);
+  const existing = await matchRef.get();
+  if (!existing.exists) { res.status(404).json({ error: 'MATCH_NOT_FOUND' }); return; }
+
+  const update: Record<string, unknown> = { updatedAt: new Date() };
+  if (scoreA  !== undefined) update.scoreA = scoreA;
+  if (scoreB  !== undefined) update.scoreB = scoreB;
+  if (status  !== undefined) update.status = status;
+  if (minute  !== undefined) update.minute = minute;
+
+  await matchRef.update(update);
+
+  // Re-run scoring engine if admin is setting FINISHED (idempotent)
+  if (status === 'FINISHED') {
+    console.info(`[Admin] Triggering scoring for match ${id} (admin override)`);
+    // Clear scoredAt so scoreMatch runs fresh
+    await matchRef.update({ scoredAt: null });
+    const { scored } = await scoreMatch(id);
+    res.json({ success: true, scored });
+    return;
+  }
+
+  res.json({ success: true });
+});

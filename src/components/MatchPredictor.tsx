@@ -35,6 +35,7 @@ interface MatchPredictorProps {
   predictions: Record<string, Prediction>;
   onSavePrediction: (matchId: string, scoreA: number, scoreB: number, firstGoalTime?: string) => void;
   isClosed: boolean;
+  authToken: string;
   outrights: {
     topScorer: string;
     mostRedCards: string;
@@ -49,15 +50,9 @@ interface MatchPredictorProps {
   }) => void;
 }
 
-// ─── Consensus stats (deterministic mock — replace with real API data later) ──
+interface ConsensusStats { winA: number; draw: number; winB: number; }
 
-function getConsensusStats(matchId: string) {
-  const sum = matchId.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
-  const winA = 35 + (sum % 30);
-  const draw  = 10 + (sum % 15);
-  const winB  = 100 - winA - draw;
-  return { winA, draw, winB };
-}
+const API_URL = import.meta.env.VITE_API_URL ?? '';
 
 // ─── Spinner-style score selector ─────────────────────────────────────────────
 
@@ -92,11 +87,33 @@ export default function MatchPredictor({
   predictions,
   onSavePrediction,
   isClosed,
+  authToken,
   outrights,
   onSaveOutrights,
 }: MatchPredictorProps) {
   const [localOutrights, setLocalOutrights] = useState(outrights);
   useEffect(() => { setLocalOutrights(outrights); }, [outrights]);
+
+  // ── Real consensus data from API ──────────────────────────────────────────
+  const [consensusMap, setConsensusMap] = useState<Record<string, ConsensusStats>>({});
+
+  useEffect(() => {
+    const upcoming = matches.filter(m => m.status === 'UPCOMING' || m.status === 'LIVE');
+    upcoming.forEach(async (m) => {
+      try {
+        const res = await fetch(`${API_URL}/api/predictions/${m.id}/consensus`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        setConsensusMap(prev => ({
+          ...prev,
+          [m.id]: { winA: data.winAPercent ?? 33, draw: data.drawPercent ?? 33, winB: data.winBPercent ?? 34 },
+        }));
+      } catch { /* ignore */ }
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matches, authToken]);
 
   const [editingMatchId, setEditingMatchId] = useState<string | null>(null);
   const [localScoreA, setLocalScoreA]       = useState(0);
@@ -266,7 +283,7 @@ export default function MatchPredictor({
           visibleMatches.map((match, idx) => {
             const currentPred = predictions[match.id];
             const isEditing   = editingMatchId === match.id;
-            const stats       = getConsensusStats(match.id);
+            const stats       = consensusMap[match.id] ?? { winA: 33, draw: 33, winB: 34 };
             const coins       = getMatchCoinsValue(match);
 
             return (

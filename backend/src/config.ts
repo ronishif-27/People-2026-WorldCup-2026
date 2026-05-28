@@ -18,8 +18,9 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   FRONTEND_URL: z.string().url(),
 
-  // Database
-  DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  // Firebase / Firestore
+  FIREBASE_PROJECT_ID: z.string().default('ai-innovation-484111'),
+  // GOOGLE_APPLICATION_CREDENTIALS is read directly by firebase-admin SDK from env
 
   // JWT
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),

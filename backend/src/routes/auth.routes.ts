@@ -1,200 +1,109 @@
 /**
- * routes/auth.routes.ts
+ * routes/auth.routes.ts — Firestore edition
  *
- * Google OAuth 2.0 authentication flow.
- *
- * Flow:
- *   1. GET /api/auth/google     → Redirect user's browser to Google consent screen
- *   2. GET /api/auth/callback   → Google redirects here with ?code=...
- *                                  • Exchange code for Google tokens
- *                                  • Fetch user profile from Google
- *                                  • Look up Department + Site in HiBob
- *                                  • Upsert User record in DB
- *                                  • Sign 24-hour JWT
- *                                  • Redirect to FRONTEND_URL with ?token=<jwt>
- *   3. GET /api/auth/me         → Return current user profile (requires Bearer token)
- *   4. POST /api/auth/logout    → Client-side only (JWT is stateless; client drops token)
+ * Google OAuth 2.0 flow + onboarding. All user records stored in Firestore wc_users.
+ * User doc ID = email (unique, used as the userId in JWT payload).
  */
 
 import { Router, Request, Response } from 'express';
 import { OAuth2Client } from 'google-auth-library';
 import crypto from 'crypto';
-import { prisma } from '../db/prisma.js';
+import { db, C, FieldValue } from '../db/firebase.js';
 import { signToken } from '../services/jwt.service.js';
-import { getEmployeeByEmail, getHiBobDepartments, getHiBobSites } from '../services/hibob.service.js';
+import { getEmployeeByEmail } from '../services/hibob.service.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.middleware.js';
 import { config, adminEmails } from '../config.js';
 
 export const authRouter = Router();
 
-// ─── Google OAuth2 Client ─────────────────────────────────────────────────────
+const oauth2Client = new OAuth2Client(config.GOOGLE_CLIENT_ID, config.GOOGLE_CLIENT_SECRET, config.GOOGLE_CALLBACK_URL);
+const GOOGLE_SCOPES = ['openid', 'email', 'profile'];
 
-const oauth2Client = new OAuth2Client(
-  config.GOOGLE_CLIENT_ID,
-  config.GOOGLE_CLIENT_SECRET,
-  config.GOOGLE_CALLBACK_URL
-);
+// ─── CSRF state store ─────────────────────────────────────────────────────────
 
-// Scopes: email + profile are sufficient (no need for broader Google Workspace access)
-const GOOGLE_SCOPES = [
-  'openid',
-  'email',
-  'profile',
-];
-
-// ─── In-memory state store (CSRF protection) ──────────────────────────────────
-// State tokens are single-use and expire after 10 minutes.
-// For multi-instance deployments, replace with Redis.
-const pendingStates = new Map<string, number>(); // state → expiry timestamp
+const pendingStates = new Map<string, number>();
 
 function generateState(): string {
   const state = crypto.randomBytes(32).toString('hex');
-  pendingStates.set(state, Date.now() + 10 * 60 * 1000); // 10-minute TTL
+  pendingStates.set(state, Date.now() + 10 * 60 * 1000);
   return state;
 }
 
 function validateAndConsumeState(state: string): boolean {
   const expiry = pendingStates.get(state);
   if (!expiry) return false;
-  pendingStates.delete(state); // single-use
+  pendingStates.delete(state);
   return Date.now() < expiry;
 }
 
-// Clean up expired states every 15 minutes (avoids memory leak)
 setInterval(() => {
   const now = Date.now();
-  for (const [state, expiry] of pendingStates) {
-    if (now > expiry) pendingStates.delete(state);
-  }
+  for (const [s, exp] of pendingStates) { if (now > exp) pendingStates.delete(s); }
 }, 15 * 60 * 1000);
 
-// ─── Route 1: Initiate OAuth ──────────────────────────────────────────────────
+// ─── Routes ───────────────────────────────────────────────────────────────────
 
-/**
- * GET /api/auth/google
- *
- * Redirects the browser to Google's OAuth consent screen.
- * Frontend links directly to this endpoint.
- */
-authRouter.get('/google', (_req: Request, res: Response): void => {
+authRouter.get('/google', (_req, res) => {
   const state = generateState();
-
-  const authUrl = oauth2Client.generateAuthUrl({
-    access_type: 'offline', // needed to get refresh_token (not used yet, but future-proof)
-    scope: GOOGLE_SCOPES,
-    state,
-    prompt: 'select_account', // always show account picker (useful for multi-account users)
-    hd: 'guesty.com',         // restrict to Guesty Workspace domain for extra security
+  const url = oauth2Client.generateAuthUrl({
+    access_type: 'offline', scope: GOOGLE_SCOPES, state,
+    prompt: 'select_account', hd: 'guesty.com',
   });
-
-  res.redirect(authUrl);
+  res.redirect(url);
 });
 
-// ─── Route 2: OAuth Callback ──────────────────────────────────────────────────
-
-/**
- * GET /api/auth/callback
- *
- * Google redirects here after the user grants (or denies) access.
- * On success: creates/updates user, signs 24h JWT, redirects to frontend.
- * On failure: redirects to frontend with ?error=...
- */
 authRouter.get('/callback', async (req: Request, res: Response): Promise<void> => {
   const { code, state, error: oauthError } = req.query as Record<string, string>;
 
-  // ── User denied access ──────────────────────────────────────────────────────
-  if (oauthError) {
-    console.warn('[Auth] OAuth denied by user:', oauthError);
-    res.redirect(`${config.FRONTEND_URL}?auth_error=access_denied`);
-    return;
-  }
-
-  // ── Missing params ──────────────────────────────────────────────────────────
-  if (!code || !state) {
-    res.redirect(`${config.FRONTEND_URL}?auth_error=missing_params`);
-    return;
-  }
-
-  // ── CSRF state validation ───────────────────────────────────────────────────
-  if (!validateAndConsumeState(state)) {
-    console.warn('[Auth] Invalid or expired OAuth state parameter');
-    res.redirect(`${config.FRONTEND_URL}?auth_error=invalid_state`);
-    return;
-  }
+  if (oauthError) { res.redirect(`${config.FRONTEND_URL}?auth_error=access_denied`); return; }
+  if (!code || !state) { res.redirect(`${config.FRONTEND_URL}?auth_error=missing_params`); return; }
+  if (!validateAndConsumeState(state)) { res.redirect(`${config.FRONTEND_URL}?auth_error=invalid_state`); return; }
 
   try {
-    // ── Step 1: Exchange authorization code for Google tokens ─────────────────
     const { tokens } = await oauth2Client.getToken(code);
     oauth2Client.setCredentials(tokens);
-
-    // ── Step 2: Fetch user profile from Google ────────────────────────────────
     const googleUser = await fetchGoogleUserInfo(tokens.id_token!);
 
-    if (!googleUser.email) {
-      console.error('[Auth] Google token is missing email claim');
-      res.redirect(`${config.FRONTEND_URL}?auth_error=no_email`);
-      return;
-    }
+    if (!googleUser.email) { res.redirect(`${config.FRONTEND_URL}?auth_error=no_email`); return; }
 
-    const email = googleUser.email.toLowerCase().trim();
-
-    // ── Step 3: Fetch Department + Site from HiBob ────────────────────────────
-    // Non-blocking: if HiBob is down, login still succeeds with defaults.
+    const email     = googleUser.email.toLowerCase().trim();
     const hibobData = await getEmployeeByEmail(email);
-
-    if (hibobData) {
-      console.info(
-        `[Auth] HiBob data for ${email}: department="${hibobData.department}", site="${hibobData.site}"`
-      );
-    } else {
-      console.warn(
-        `[Auth] HiBob lookup failed for ${email} — using defaults (Unknown / Unknown)`
-      );
-    }
-
-    // ── Step 4: Upsert user in database ──────────────────────────────────────
-    const isAdmin = adminEmails.has(email);
-
-    // Prefer HiBob avatar; fall back to Google profile picture
+    const isAdmin   = adminEmails.has(email);
     const avatarUrl = hibobData?.avatarUrl ?? googleUser.picture ?? null;
 
-    const user = await prisma.user.upsert({
-      where: { email },
-      update: {
-        // Refresh from HiBob and Google on every login to catch name/dept/avatar changes
-        fullName:   hibobData?.fullName ?? googleUser.name ?? email.split('@')[0],
-        googleId:   googleUser.sub,
-        department: hibobData?.department ?? 'Unknown',
-        site:       hibobData?.site ?? 'Unknown',
-        avatarUrl,                                    // refreshed every login (HiBob URLs expire ~2 months)
-        // Promote to ADMIN if listed in ADMIN_EMAILS env var (never demote)
-        ...(isAdmin ? { role: 'ADMIN' as const } : {}),
-      },
-      create: {
-        email,
-        fullName:   hibobData?.fullName ?? googleUser.name ?? email.split('@')[0],
-        googleId:   googleUser.sub,
-        department: hibobData?.department ?? 'Unknown',
-        site:       hibobData?.site ?? 'Unknown',
-        avatarUrl,
-        role: isAdmin ? 'ADMIN' : 'USER',
-      },
-    });
+    const userRef  = db.collection(C.USERS).doc(email);
+    const existing = await userRef.get();
 
-    // ── Step 5: Sign 24-hour JWT ──────────────────────────────────────────────
-    const token = signToken({
-      userId: user.id,
-      email: user.email,
-      role: user.role as 'USER' | 'ADMIN', // SQLite stores as String; TS cast is safe
-    });
+    const userData = {
+      email,
+      fullName:   hibobData?.fullName ?? googleUser.name ?? email.split('@')[0],
+      googleId:   googleUser.sub,
+      department: hibobData?.department ?? 'Unknown',
+      site:       hibobData?.site ?? 'Unknown',
+      avatarUrl,
+      role:       isAdmin ? 'ADMIN' : (existing.exists ? existing.data()!.role : 'USER'),
+      updatedAt:  new Date(),
+    };
 
-    console.info(
-      `[Auth] Login success: ${email} | role=${user.role} | ` +
-      `dept="${user.department}" | site="${user.site}"`
-    );
+    if (!existing.exists) {
+      await userRef.set({
+        ...userData,
+        totalPoints:        0,
+        exactCorrectCount:  0,
+        winnerCorrectCount: 0,
+        hasParticipated:    false,
+        termsAcceptedAt:    null,
+        createdAt:          new Date(),
+      });
+    } else {
+      await userRef.update(userData);
+    }
 
-    // ── Step 6: Redirect to frontend with token ───────────────────────────────
-    // The frontend reads ?token= from the URL, stores it in memory, then strips it.
+    const user = (await userRef.get()).data()!;
+
+    const token = signToken({ userId: email, email, role: user.role as 'USER' | 'ADMIN' });
+
+    console.info(`[Auth] Login: ${email} | role=${user.role} | dept="${user.department}" | site="${user.site}"`);
     res.redirect(`${config.FRONTEND_URL}/auth/callback?token=${encodeURIComponent(token)}`);
   } catch (err) {
     console.error('[Auth] OAuth callback error:', err);
@@ -202,226 +111,100 @@ authRouter.get('/callback', async (req: Request, res: Response): Promise<void> =
   }
 });
 
-// ─── Route 3: Get Current User ────────────────────────────────────────────────
-
-/**
- * GET /api/auth/me
- * Protected — requires Bearer token.
- *
- * Returns the current user's profile and T&C acceptance status.
- * The frontend calls this on every load to restore session state.
- */
 authRouter.get('/me', requireAuth, async (req: Request, res: Response): Promise<void> => {
   try {
-    const user = await prisma.user.findUnique({
-      where: { id: req.user!.userId },
-      select: {
-        id: true,
-        email: true,
-        fullName: true,
-        department: true,
-        site: true,
-        avatarUrl: true,
-        role: true,
-        termsAcceptedAt: true,
-        hasParticipated: true,
-        createdAt: true,
-      },
-    });
-
-    if (!user) {
-      // User was deleted from DB after token was issued (edge case)
-      res.status(401).json({
-        error: 'USER_NOT_FOUND',
-        message: 'Your account was not found. Please sign in again.',
-      });
-      return;
-    }
-
+    const doc = await db.collection(C.USERS).doc(req.user!.userId).get();
+    if (!doc.exists) { res.status(401).json({ error: 'USER_NOT_FOUND' }); return; }
+    const u = doc.data()!;
     res.json({
       user: {
-        ...user,
-        termsAccepted: user.termsAcceptedAt !== null,
+        id:               doc.id,
+        email:            u.email,
+        fullName:         u.fullName,
+        department:       u.department,
+        site:             u.site,
+        avatarUrl:        u.avatarUrl ?? null,
+        role:             u.role,
+        termsAccepted:    u.termsAcceptedAt !== null,
+        hasParticipated:  u.hasParticipated ?? false,
+        totalPoints:      u.totalPoints ?? 0,
+        exactCorrectCount: u.exactCorrectCount ?? 0,
       },
     });
   } catch (err) {
     console.error('[Auth] /me error:', err);
-    res.status(500).json({ error: 'SERVER_ERROR', message: 'Failed to fetch user profile.' });
+    res.status(500).json({ error: 'SERVER_ERROR' });
   }
 });
 
-// ─── Route 4a: Lists — departments + sites for onboarding dropdowns ───────────
+// ─── Onboarding ───────────────────────────────────────────────────────────────
 
-/**
- * GET /api/auth/lists
- * Protected — requires Bearer token.
- *
- * Returns the live HiBob department and site lists (cached 1 h).
- * The onboarding modal fetches this to populate its dropdowns dynamically,
- * ensuring the options always reflect HiBob's source-of-truth data.
- */
-authRouter.get('/lists', requireAuth, async (_req: Request, res: Response): Promise<void> => {
-  try {
-    const [departments, sites] = await Promise.all([
-      getHiBobDepartments(),
-      getHiBobSites(),
-    ]);
-    res.json({ departments, sites });
-  } catch (err) {
-    console.error('[Auth] /lists error:', err);
-    res.status(500).json({ error: 'SERVER_ERROR', message: 'Failed to fetch dropdown lists.' });
-  }
-});
+const VALID_DEPARTMENTS = new Set([
+  'AI Team','Customer Experience','Customer Success','Data & Information Systems',
+  'Engineering','Finance','G&A','Guest Communication Services','IS','Legal',
+  'Marketing','Onboarding','Operations','Payments','People','Product',
+  'Product Design','Professional Services','R&D','RU G&A','RU R&D','Sales',
+  'StaySense Tech','Strategy',
+]);
 
-// ─── Route 4b: Onboarding — save dept/site + accept T&C ──────────────────────
+const VALID_SITES = new Set([
+  'Australia','Canada','Colombia','Dubai','France','Ireland','Israel','Mexico',
+  'Netherlands','Panama','Philippines','Poland','Portugal','Remote','Spain',
+  'Sweden','Switzerland','Turkey','UK','Ukraine','US - East','US - West',
+]);
 
-/**
- * POST /api/auth/onboarding
- * Protected — requires Bearer token.
- *
- * Called once per user after they confirm Department, Site, and T&C on the
- * onboarding modal.  Sets termsAcceptedAt and updates dept/site in the DB.
- * Also creates a TermsAcceptance audit record.
- *
- * Idempotent: safe to call again (re-updates dept/site, adds another acceptance row).
- */
 authRouter.post('/onboarding', requireAuth, async (req: Request, res: Response): Promise<void> => {
   const { department, site } = req.body as { department?: string; site?: string };
 
-  if (!department?.trim() || !site?.trim()) {
-    res.status(400).json({ error: 'MISSING_FIELDS', message: 'department and site are required.' });
-    return;
-  }
-
-  // Validate against live HiBob lists (source of truth)
-  const [validDepts, validSites] = await Promise.all([
-    getHiBobDepartments(),
-    getHiBobSites(),
-  ]);
-
-  if (validDepts.length > 0 && !validDepts.includes(department)) {
-    res.status(400).json({ error: 'INVALID_DEPARTMENT', message: `"${department}" is not a valid department.` });
-    return;
-  }
-
-  if (validSites.length > 0 && !validSites.includes(site)) {
-    res.status(400).json({ error: 'INVALID_SITE', message: `"${site}" is not a valid site.` });
-    return;
-  }
+  if (!department || !site) { res.status(400).json({ error: 'MISSING_FIELDS' }); return; }
+  if (!VALID_DEPARTMENTS.has(department)) { res.status(400).json({ error: 'INVALID_DEPARTMENT' }); return; }
+  if (!VALID_SITES.has(site)) { res.status(400).json({ error: 'INVALID_SITE' }); return; }
 
   try {
-    const now = new Date();
+    const now     = new Date();
+    const userRef = db.collection(C.USERS).doc(req.user!.userId);
 
-    const [user] = await Promise.all([
-      prisma.user.update({
-        where: { id: req.user!.userId },
-        data: { department, site, termsAcceptedAt: now },
-        select: { id: true, email: true, fullName: true, department: true, site: true, avatarUrl: true, role: true },
-      }),
-      prisma.termsAcceptance.create({
-        data: {
-          userId: req.user!.userId,
-          acceptedAt: now,
-          ipAddress: req.ip ?? null,
-          version: 1,
-        },
-      }),
+    await Promise.all([
+      userRef.update({ department, site, termsAcceptedAt: now }),
+      db.collection(C.TERMS).add({ userId: req.user!.userId, acceptedAt: now, ipAddress: req.ip ?? null, version: 1 }),
     ]);
 
-    console.info(
-      `[Auth] Onboarding complete: ${user.email} | dept="${department}" | site="${site}"`
-    );
-
-    res.json({ success: true, user: { ...user, termsAccepted: true } });
+    const u = (await userRef.get()).data()!;
+    res.json({ success: true, user: { id: userRef.id, email: u.email, fullName: u.fullName, department, site, role: u.role, termsAccepted: true } });
   } catch (err) {
     console.error('[Auth] /onboarding error:', err);
-    res.status(500).json({ error: 'SERVER_ERROR', message: 'Failed to save onboarding data.' });
+    res.status(500).json({ error: 'SERVER_ERROR' });
   }
 });
 
-// ─── Route 5: HiBob connection test (admin only) ─────────────────────────────
+// ─── HiBob test (admin only) ──────────────────────────────────────────────────
 
-/**
- * GET /api/auth/hibob-test
- * Protected — requires Bearer token + ADMIN role.
- *
- * Query params:
- *   ?email=someone@guesty.com  (optional — defaults to the calling user's email)
- *
- * Returns the raw HiBob data for the given email so we can verify field mapping
- * without going through a full login cycle.
- *
- * Example:
- *   curl -H "Authorization: Bearer <jwt>" \
- *        "http://localhost:8080/api/auth/hibob-test?email=roni.shif@guesty.com"
- */
 authRouter.get('/hibob-test', requireAuth, requireAdmin, async (req: Request, res: Response): Promise<void> => {
-  const email = (req.query.email as string | undefined) ?? req.user!.email;
-
-  try {
-    const hibobData = await getEmployeeByEmail(email);
-
-    if (!hibobData) {
-      res.status(404).json({
-        success: false,
-        email,
-        message: 'No employee found in HiBob for this email, or the API call failed. Check server logs for details.',
-      });
-      return;
-    }
-
-    res.json({ success: true, email, hibobData });
-  } catch (err) {
-    console.error('[Auth] /hibob-test error:', err);
-    res.status(500).json({ success: false, error: 'SERVER_ERROR', message: String(err) });
-  }
+  const email = (req.query.email as string) || req.user!.email;
+  const hibobData = await getEmployeeByEmail(email);
+  if (!hibobData) { res.status(404).json({ error: 'NOT_FOUND', message: `No HiBob record for ${email}` }); return; }
+  res.json({ email, hibobData });
 });
 
-// ─── Route 6: Logout ─────────────────────────────────────────────────────────
+// ─── Lists (dept + site from HiBob for onboarding dropdowns) ─────────────────
 
-/**
- * POST /api/auth/logout
- * Protected — requires Bearer token.
- *
- * JWT is stateless — the actual logout is done client-side by dropping
- * the token from memory. This endpoint exists so the frontend has a
- * clean API call to hook into for future server-side session management
- * (e.g., token blocklist).
- */
-authRouter.post('/logout', requireAuth, (_req: Request, res: Response): void => {
-  // Future: add token to a Redis blocklist here
-  res.json({ success: true, message: 'Signed out successfully.' });
+authRouter.get('/lists', requireAuth, async (_req, res) => {
+  const { getHiBobDepartments, getHiBobSites } = await import('../services/hibob.service.js');
+  const [departments, sites] = await Promise.all([getHiBobDepartments(), getHiBobSites()]);
+  res.json({ departments, sites });
+});
+
+authRouter.post('/logout', requireAuth, (_req, res) => {
+  res.json({ success: true });
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Shape of the decoded Google ID token claims */
-interface GoogleUserInfo {
-  sub: string;      // Google User ID (stable, unique)
-  email: string;
-  name: string;
-  picture?: string;
-  hd?: string;      // Hosted domain (e.g. "guesty.com") — only present for Workspace users
-}
+interface GoogleUserInfo { sub: string; email: string; name: string; picture?: string; hd?: string; }
 
-/**
- * Decodes and verifies the Google ID token to extract user claims.
- * Uses google-auth-library's verifyIdToken for signature verification.
- */
 async function fetchGoogleUserInfo(idToken: string): Promise<GoogleUserInfo> {
-  const ticket = await oauth2Client.verifyIdToken({
-    idToken,
-    audience: config.GOOGLE_CLIENT_ID,
-  });
-
+  const ticket  = await oauth2Client.verifyIdToken({ idToken, audience: config.GOOGLE_CLIENT_ID });
   const payload = ticket.getPayload();
   if (!payload) throw new Error('Google ID token payload is empty');
-
-  return {
-    sub: payload.sub,
-    email: payload.email ?? '',
-    name: payload.name ?? '',
-    picture: payload.picture,
-    hd: payload.hd,
-  };
+  return { sub: payload.sub, email: payload.email ?? '', name: payload.name ?? '', picture: payload.picture, hd: payload.hd };
 }

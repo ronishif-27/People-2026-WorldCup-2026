@@ -18,9 +18,9 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import confetti from 'canvas-confetti';
 
-// Types and Mock Data
+// Types
 import { Match, Prediction, Employee } from './types';
-import { INITIAL_MATCHES, INITIAL_EMPLOYEES } from './data/mockData';
+import { INITIAL_MATCHES } from './data/mockData';
 
 // Custom Components
 import LoginScreen from './components/LoginScreen';
@@ -31,8 +31,6 @@ import { CountdownClock } from './components/CountdownClock';
 import AdminPanel from './components/AdminPanel';
 import GuestyLogo from './components/GuestyLogo';
 
-// Scoring calculate function
-import { calculatePredictionPoints, getMatchCoinsValue } from './utils/scoring';
 
 // ─── API Client ───────────────────────────────────────────────────────────────
 
@@ -61,10 +59,12 @@ interface ApiUser {
   fullName: string;
   department: string;
   site: string;
-  avatarUrl: string | null;     // HiBob avatar (signed Cloudinary URL) or Google picture
+  avatarUrl: string | null;
   role: 'USER' | 'ADMIN';
   termsAccepted: boolean;
   hasParticipated: boolean;
+  totalPoints: number;
+  exactCorrectCount: number;
 }
 
 /**
@@ -121,6 +121,96 @@ async function callLogout(token: string): Promise<void> {
   }
 }
 
+/** Fetch all predictions for the current user from the API */
+async function fetchUserPredictions(token: string): Promise<Record<string, Prediction>> {
+  try {
+    const res = await fetch(`${API_URL}/api/predictions/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return {};
+    const data = await res.json();
+    const map: Record<string, Prediction> = {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const p of (data.predictions ?? []) as any[]) {
+      map[p.matchId] = {
+        matchId:          p.matchId,
+        predictedScoreA:  p.scoreA,
+        predictedScoreB:  p.scoreB,
+        firstGoalTime:    p.firstGoalRange ?? '',
+        lastUpdated:      p.updatedAt ?? p.createdAt ?? new Date().toISOString(),
+      };
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
+
+/** Save a prediction to the server */
+async function postPrediction(
+  token: string,
+  matchId: string,
+  scoreA: number,
+  scoreB: number,
+  firstGoalRange?: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_URL}/api/predictions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchId, scoreA, scoreB, firstGoalRange: firstGoalRange ?? null }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+interface ApiLeaderboardEntry {
+  rank: number;
+  userId: string;
+  email: string;
+  fullName: string;
+  department: string;
+  site: string;
+  avatarUrl: string | null;
+  totalPoints: number;
+  exactCorrectCount: number;
+}
+
+/** Fetch the global leaderboard */
+async function fetchLeaderboard(token: string): Promise<ApiLeaderboardEntry[]> {
+  try {
+    const res = await fetch(`${API_URL}/api/leaderboard?limit=50`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.leaderboard ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Fetch live activity feed */
+async function fetchActivity(token: string): Promise<{ id: string; text: string; time: string }[]> {
+  try {
+    const res = await fetch(`${API_URL}/api/activity?limit=20`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (data.activity ?? []).map((a: any) => ({
+      id:   a.id,
+      text: a.description ?? a.text ?? '',
+      time: a.createdAt ? new Date(a.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export default function App() {
   // Navigation tab states
   const [activeTab, setActiveTab] = useState<'Dashboard' | 'Predictions' | 'Leaderboard' | 'Rules' | 'Admin'>('Dashboard');
@@ -169,12 +259,8 @@ export default function App() {
   // Employees state for real-time rank updates
   const [employees, setEmployees] = useState<Employee[]>([]);
 
-  // Real-time live activity logs ticker
-  const [activityLogs, setActivityLogs] = useState<{ id: string; text: string; time: string }[]>([
-    { id: '1', text: 'Sarah Miller (Customer Success, Tel Aviv) just placed a prediction on Brazil vs Japan!', time: '1m ago' },
-    { id: '2', text: 'Alexander Kovalenko (Engineering, Kyiv) boosted Mexico vs Germany with 2X Star!', time: '3m ago' },
-    { id: '3', text: 'David Chen (Engineering, New York) gained +250 🪙 for correct outcomes!', time: '5m ago' },
-  ]);
+  // Live activity ticker — populated from /api/activity, polled every 30s
+  const [activityLogs, setActivityLogs] = useState<{ id: string; text: string; time: string }[]>([]);
 
   // Trigger global confetti burst
   const triggerCelebration = () => {
@@ -233,14 +319,34 @@ export default function App() {
       setAuthToken(tokenToUse);
       setCurrentUser(user);
 
-      // ── Load live match data from backend ──────────────────────────────────
-      // Runs in parallel with auth — replaces mock/localStorage matches with
-      // real WC 2026 fixtures from football-data.org (via our backend cache).
-      fetchMatches(tokenToUse).then((apiMatches) => {
+      // ── Load live data from backend in parallel ────────────────────────────
+      Promise.all([
+        fetchMatches(tokenToUse),
+        fetchUserPredictions(tokenToUse),
+        fetchLeaderboard(tokenToUse),
+        fetchActivity(tokenToUse),
+      ]).then(([apiMatches, apiPredictions, apiLeaderboard, apiActivity]) => {
         if (apiMatches.length > 0) {
           setMatches(apiMatches);
-          localStorage.setItem('guesty_matches_v2', JSON.stringify(apiMatches));
           console.info(`[App] Loaded ${apiMatches.length} matches from API`);
+        }
+        if (Object.keys(apiPredictions).length > 0) {
+          setPredictions(apiPredictions);
+        }
+        if (apiLeaderboard.length > 0) {
+          const avatarColors = ['from-[#14665F] to-[#072C23]','from-[#FA877D] to-[#C55A52]','from-[#8CBEBE] to-[#14665F]','from-slate-500 to-slate-700'];
+          setEmployees(apiLeaderboard.map((e, i) => ({
+            id:        e.userId,
+            fullName:  e.fullName,
+            department: e.department,
+            site:      e.site,
+            points:    e.totalPoints,
+            avatarUrl: e.avatarUrl ?? undefined,
+            avatarColor: avatarColors[i % avatarColors.length],
+          })));
+        }
+        if (apiActivity.length > 0) {
+          setActivityLogs(apiActivity);
         }
       });
 
@@ -253,54 +359,35 @@ export default function App() {
       setAuthLoading(false);
     };
 
-    // ── Non-auth localStorage state ──────────────────────────────────────────
-    // (kept in localStorage for now — will move to backend in future phases)
-    const matchesSaved = localStorage.getItem('guesty_matches_v2');
-    if (matchesSaved) {
-      setMatches(JSON.parse(matchesSaved));
-    } else {
-      setMatches(INITIAL_MATCHES);
-    }
+    // ── Bootstrap with mock matches (API will override once auth completes) ──
+    setMatches(INITIAL_MATCHES);
 
-    const predictionsSaved = localStorage.getItem('guesty_predictions_v3');
-    if (predictionsSaved) {
-      setPredictions(JSON.parse(predictionsSaved));
-    } else {
-      const initialSeed = {
-        'm-finished-1': {
-          matchId: 'm-finished-1',
-          predictedScoreA: 3,
-          predictedScoreB: 0,
-          lastUpdated: new Date().toISOString()
-        }
-      };
-      setPredictions(initialSeed);
-      localStorage.setItem('guesty_predictions_v3', JSON.stringify(initialSeed));
-    }
-
-    const outrightsSaved = localStorage.getItem('guesty_outrights_v3');
-    if (outrightsSaved) setOutrights(JSON.parse(outrightsSaved));
-
+    // ── Persist admin force-lock across reloads ────────────────────────────
     const forceLockSaved = localStorage.getItem('guesty_force_lock');
     if (forceLockSaved === 'true') setForceGlobalLock(true);
 
     initAuth();
   }, []);
 
-  // 2. State Persistent synchronization
+  // 2. Poll leaderboard + activity every 30s while the user is logged in
   useEffect(() => {
-    if (matches.length > 0) {
-      localStorage.setItem('guesty_matches_v2', JSON.stringify(matches));
-    }
-  }, [matches]);
-
-  useEffect(() => {
-    localStorage.setItem('guesty_predictions_v3', JSON.stringify(predictions));
-  }, [predictions]);
-
-  useEffect(() => {
-    localStorage.setItem('guesty_outrights_v3', JSON.stringify(outrights));
-  }, [outrights]);
+    if (!authToken) return;
+    const interval = setInterval(() => {
+      fetchLeaderboard(authToken).then((lb) => {
+        if (lb.length === 0) return;
+        const avatarColors = ['from-[#14665F] to-[#072C23]','from-[#FA877D] to-[#C55A52]','from-[#8CBEBE] to-[#14665F]','from-slate-500 to-slate-700'];
+        setEmployees(lb.map((e, i) => ({
+          id: e.userId, fullName: e.fullName, department: e.department,
+          site: e.site, points: e.totalPoints, avatarUrl: e.avatarUrl ?? undefined,
+          avatarColor: avatarColors[i % avatarColors.length],
+        })));
+      });
+      fetchActivity(authToken).then((activity) => {
+        if (activity.length > 0) setActivityLogs(activity);
+      });
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [authToken]);
 
   // Auth: logout
   const handleLogout = useCallback(async () => {
@@ -324,11 +411,12 @@ export default function App() {
     setShowOnboarding(true);
   };
 
-  // User Actions to record a prediction
-  const handleSavePrediction = (matchId: string, scoreA: number, scoreB: number, firstGoalTime?: string) => {
+  // User Actions to record a prediction — optimistically updates UI, persists to server
+  const handleSavePrediction = useCallback(async (matchId: string, scoreA: number, scoreB: number, firstGoalTime?: string) => {
     const isLocked = isPredictionsClosed || forceGlobalLock;
     if (isLocked) return;
-    
+
+    // Optimistic update
     setPredictions((prev) => ({
       ...prev,
       [matchId]: {
@@ -339,115 +427,23 @@ export default function App() {
         lastUpdated: new Date().toISOString(),
       },
     }));
-  };
 
-  // Dynamic calculated correct guesses count for finished matches
-  const correctGuessesCount = useMemo(() => {
-    let count = 0;
-    matches.forEach((match) => {
-      if (match.status === 'FINISHED') {
-        const pred = predictions[match.id];
-        if (pred) {
-          const scoreResult = calculatePredictionPoints(pred, match);
-          if (scoreResult.points > 0) {
-            count++;
-          }
-        }
-      }
-    });
-    return count;
-  }, [predictions, matches]);
-
-  // Dynamic calculated score points for logged in user based on Finished Match Predictions
-  const coinBalance = useMemo(() => {
-    let earnedCoins = 0;
-    matches.forEach((match) => {
-      if (match.status === 'FINISHED') {
-        const pred = predictions[match.id];
-        
-        const scoreResult = calculatePredictionPoints(pred, match);
-        // User guesses correctly if score represents exact outcomes or correct outcome winners
-        if (scoreResult.type === 'exact' || scoreResult.type === 'winner') {
-          earnedCoins += getMatchCoinsValue(match);
-        }
-      }
-    });
-
-    return earnedCoins;
-  }, [predictions, matches]);
-
-  // Synchronize and initialize employee list state
-  useEffect(() => {
-    if (!currentUser) return;
-
-    setEmployees((prev) => {
-      const userObj = {
-        id: 'emp-logged',
-        fullName: currentUser.fullName,
-        department: currentUser.department,
-        site: currentUser.site,
-        points: coinBalance,
-        avatarColor: 'from-[#14665F] to-[#072C23]',
-      };
-
-      if (prev.length > 0) {
-        // Find if user already exists in list and update, otherwise insert
-        const userExists = prev.some(e => e.id === 'emp-logged');
-        if (userExists) {
-          return prev.map(e => e.id === 'emp-logged' ? userObj : e).sort((a, b) => b.points - a.points);
-        } else {
-          return [userObj, ...prev].sort((a, b) => b.points - a.points);
-        }
+    if (authToken) {
+      const ok = await postPrediction(authToken, matchId, scoreA, scoreB, firstGoalTime);
+      if (!ok) {
+        console.warn('[App] Failed to persist prediction for', matchId);
       } else {
-        // Initial setup
-        return [...INITIAL_EMPLOYEES, userObj].sort((a, b) => b.points - a.points);
+        // Refresh user stats after successful prediction
+        fetchCurrentUser(authToken).then((u) => { if (u) setCurrentUser(u); });
       }
-    });
-  }, [currentUser, coinBalance]);
+    }
+  }, [authToken, isPredictionsClosed, forceGlobalLock]);
 
-  // Real-time updates simulation of colleagues' coin standings and live activity logs
-  useEffect(() => {
-    if (employees.length === 0) return;
+  // Server-authoritative stats — refreshed after each prediction save
+  const correctGuessesCount = currentUser?.exactCorrectCount ?? 0;
+  const coinBalance = currentUser?.totalPoints ?? 0;
 
-    const interval = setInterval(() => {
-      const targetList = employees.filter((e) => e.id !== 'emp-logged');
-      if (targetList.length === 0) return;
-
-      const randomEmp = targetList[Math.floor(Math.random() * targetList.length)];
-      const coinsDiff = Math.random() > 0.4 ? 250 : 350;
-
-      const actions = [
-        `predicted the exact score for Spain vs England`,
-        `calculated correct goals difference for USA matchup`,
-        `is leading the standings after final match stats`,
-        `placed prediction stakes for tomorrow's tournament match`,
-      ];
-      const selectedAction = actions[Math.floor(Math.random() * actions.length)];
-
-      setEmployees((prev) => {
-        const updated = prev.map((e) => {
-          if (e.id === randomEmp.id) {
-            return {
-              ...e,
-              points: e.points + coinsDiff,
-            };
-          }
-          return e;
-        });
-        return [...updated].sort((a, b) => b.points - a.points);
-      });
-
-      // Add to activity logs
-      const newLog = {
-        id: String(Date.now()),
-        text: `${randomEmp.fullName} (${randomEmp.department}, ${randomEmp.site}) ${selectedAction} (+${coinsDiff} 🪙)`,
-        time: 'Just now',
-      };
-      setActivityLogs((prev) => [newLog, ...prev.slice(0, 4)]);
-    }, 10000);
-
-    return () => clearInterval(interval);
-  }, [employees]);
+  // No local simulation — leaderboard and activity are populated from real API calls
 
   // Dashboard Stats cards calculations
   const statsList = useMemo(() => {
@@ -871,11 +867,12 @@ export default function App() {
 
             {/* View 2: PREDICTION INPUT HUB */}
             {activeTab === 'Predictions' && (
-              <MatchPredictor 
+              <MatchPredictor
                 matches={matches}
                 predictions={predictions}
                 onSavePrediction={handleSavePrediction}
                 isClosed={isCurrentlyLocked}
+                authToken={authToken ?? ''}
                 outrights={outrights}
                 onSaveOutrights={setOutrights}
               />
