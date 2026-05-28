@@ -5,12 +5,39 @@ to Google Cloud Run. Everything in this directory is production-ready; the
 backend is stateless (all persistence in Firestore) so you can deploy directly
 with `gcloud run deploy`.
 
+## Hand-off checklist — what you need from Roni
+
+These values exist in Roni's local `backend/.env` and are **not** in the
+repo (deliberately — secrets never get committed). Get them from her over
+1Password / Slack DM before deploying:
+
+| Secret name (Secret Manager) | What it is |
+| --- | --- |
+| `JWT_SECRET` | 64-char random string. If lost, just generate a new one with `node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"` — only effect is that existing sessions invalidate. |
+| `GOOGLE_CLIENT_ID` | OAuth 2.0 Client ID (Google Cloud Console → APIs & Credentials) |
+| `GOOGLE_CLIENT_SECRET` | OAuth 2.0 Client Secret — pairs with the above |
+| `HIBOB_SERVICE_USER_ID` | HiBob service-user ID (provisioned by Roni in HiBob admin) |
+| `HIBOB_SERVICE_USER_TOKEN` | HiBob service-user token — pairs with the above |
+| `FOOTBALL_DATA_API_KEY` | football-data.org free-tier API key |
+
+You also need from Roni:
+- The eventual **frontend URL** (Firebase Hosting URL or custom domain) for
+  `FRONTEND_URL` and CORS.
+
+After your **first** Cloud Run deploy, send the resulting Cloud Run service
+URL back to Roni — she needs it to:
+1. Add `<service-url>/api/auth/callback` to the Google OAuth client as an
+   authorised redirect URI.
+2. Set `VITE_API_URL=<service-url>` for the frontend build.
+
+Then you redeploy once more with `GOOGLE_CALLBACK_URL=<service-url>/api/auth/callback`.
+
 ## Architecture summary
 
 - **Runtime:** Node.js 20 (Alpine) in a multi-stage Docker image.
-- **Persistence:** Cloud Firestore (Native mode), database name `worldcup`,
-  in project `ai-innovation-484111`. All collections are prefixed `wc_` for
-  isolation.
+- **Persistence:** Cloud Firestore (Native mode), database name
+  `worldcup-2026-people-team`, in project `ai-innovation-484111`. All
+  collections are prefixed `wc_` for isolation.
 - **Auth:** Google OAuth 2.0 → JWT (HS256, 24h). State is purely in the JWT;
   no server-side session store.
 - **External:** HiBob (employee directory), football-data.org (match results).
@@ -35,15 +62,15 @@ You will need IAM:
 - `roles/datastore.user` on the `worldcup` database (the runtime service
   account, not your user — see below)
 
-## 1. Provision the Firestore database (one-time)
+## 1. Firestore database — already provisioned
 
-A dedicated database called `worldcup` must exist before the first deploy.
-It is created by Roni (or whoever has `roles/datastore.owner`) via the
-GCP Console:
+A dedicated database `worldcup-2026-people-team` has already been created
+in project `ai-innovation-484111`:
 
-> https://console.cloud.google.com/firestore/databases?project=ai-innovation-484111
+> https://console.cloud.google.com/firestore/databases/worldcup-2026-people-team/data/panel?project=ai-innovation-484111
 
-Settings: ID `worldcup`, Region `us-central1`, Native mode, Production rules.
+This is the database the backend must target — set
+`FIRESTORE_DATABASE_ID=worldcup-2026-people-team` on the Cloud Run service.
 
 **Do not** reuse the existing `aiinnovationhubv3` database — it belongs to
 another team.
@@ -130,7 +157,7 @@ gcloud run deploy worldcup-backend \
   --timeout=60s \
   --set-env-vars="NODE_ENV=production" \
   --set-env-vars="FIREBASE_PROJECT_ID=${PROJECT}" \
-  --set-env-vars="FIRESTORE_DATABASE_ID=worldcup" \
+  --set-env-vars="FIRESTORE_DATABASE_ID=worldcup-2026-people-team" \
   --set-env-vars="FRONTEND_URL=${FRONTEND_URL}" \
   --set-env-vars="JWT_EXPIRES_IN=24h" \
   --set-env-vars="ADMIN_EMAILS=yeela@guesty.com,olga.stempin@guesty.com" \
@@ -170,12 +197,13 @@ On first request you should see in logs:
 
 ```
 🚀 Worldcup API listening on 0.0.0.0:8080
-   Firestore   : ai-innovation-484111 / worldcup
+   Firestore   : ai-innovation-484111 / worldcup-2026-people-team
 ✅ Firestore connected
 ```
 
 Then in the GCP Console, switch the Firestore database dropdown to
-`worldcup` and confirm `wc_users` / `wc_matches` collections appear there.
+`worldcup-2026-people-team` and confirm `wc_users` / `wc_matches`
+collections appear there.
 
 ## Updating
 
