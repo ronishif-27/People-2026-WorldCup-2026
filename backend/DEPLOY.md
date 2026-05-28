@@ -1,5 +1,10 @@
 # Backend Deployment Guide — Cloud Run
 
+> **Start here:** [`HANDOFF.md`](./HANDOFF.md) is the high-level checklist
+> covering what's done, what you need from Roni, and the post-deploy steps.
+> This file is the detailed `gcloud` runbook referenced from it. Required
+> env vars and their shapes live in [`.env.example`](./.env.example).
+
 This document is for the engineer deploying the Guesty World Cup 2026 backend
 to Google Cloud Run. Everything in this directory is production-ready; the
 backend is stateless (all persistence in Firestore) so you can deploy directly
