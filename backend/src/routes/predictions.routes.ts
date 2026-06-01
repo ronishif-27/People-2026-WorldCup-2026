@@ -172,14 +172,23 @@ predictionsRouter.get('/:matchId/consensus', requireAuth, async (req: Request, r
   const total = winA + draw + winB;
 
   if (total === 0) {
-    res.json({ winA: 33, draw: 34, winB: 33, totalVotes: 0 });
+    res.json({
+      winA: 33, draw: 34, winB: 33,
+      winACount: 0, drawCount: 0, winBCount: 0,
+      totalVotes: 0,
+    });
     return;
   }
 
   res.json({
+    // Percentages (UPCOMING + LIVE states render these)
     winA:       Math.round((winA / total) * 100),
     draw:       Math.round((draw / total) * 100),
     winB:       Math.round((winB / total) * 100),
+    // Raw vote counts (FINISHED state renders these — "27 / 2 / 20")
+    winACount:  winA,
+    drawCount:  draw,
+    winBCount:  winB,
     totalVotes: total,
   });
 });

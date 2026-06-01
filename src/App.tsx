@@ -441,8 +441,20 @@ export default function App() {
   }, [currentUser, location.pathname, navigate]);
 
   // Live activity ticker — real-time push via Server-Sent Events.
-  // The hook handles backlog + new events + auto-reconnect.
-  const liveActivity = useLiveActivity(authToken, 5, !!authToken);
+  // Also handles `event: match` frames to flip match cards UPCOMING → LIVE →
+  // FINISHED in real time as football-data.org reports transitions.
+  const liveActivity = useLiveActivity(authToken, 5, !!authToken, (ev) => {
+    setMatches((prev) => prev.map((m) => {
+      if (m.id !== ev.matchId) return m;
+      return {
+        ...m,
+        status: ev.to as Match['status'],
+        scoreA: ev.scoreA,
+        scoreB: ev.scoreB,
+        minute: ev.minute ?? undefined,
+      };
+    }));
+  });
 
   // Project SSE events into the existing ticker shape — keeps the UI layer untouched
   useEffect(() => {

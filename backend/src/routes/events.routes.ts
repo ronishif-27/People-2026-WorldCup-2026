@@ -71,26 +71,20 @@ eventsRouter.get('/stream', (req: Request, res: Response): void => {
     res.write(`: ping ${Date.now()}\n\n`);
   }, 25_000);
 
-  // ── Firestore listener: stream new activity docs as they appear ─────────
-  // We use a server-side onSnapshot. The first snapshot delivers the latest
-  // 50 docs; after that, each `added` change is pushed individually.
-  // (We send only docChanges() of type 'added' so clients aren't spammed
-  // with the same backlog on every change.)
-  let firstSnapshot = true;
-  const unsubscribe = getDb().collection(C.ACTIVITY)
+  // ── Activity listener (existing) ────────────────────────────────────────
+  // First snapshot → 'backlog' event; subsequent 'added' changes → 'activity' frames.
+  let firstActivitySnapshot = true;
+  const unsubActivity = getDb().collection(C.ACTIVITY)
     .orderBy('createdAt', 'desc')
     .limit(50)
     .onSnapshot(
       (snap) => {
-        if (firstSnapshot) {
-          // Initial backlog → send as a single 'backlog' event so the client
-          // can hydrate its ticker on connect.
+        if (firstActivitySnapshot) {
           const items = snap.docs.map(d => toPayload(d.id, d.data()));
           res.write(`event: backlog\ndata: ${JSON.stringify({ items })}\n\n`);
-          firstSnapshot = false;
+          firstActivitySnapshot = false;
           return;
         }
-        // Subsequent updates — push only newly added rows.
         for (const change of snap.docChanges()) {
           if (change.type !== 'added') continue;
           const payload = toPayload(change.doc.id, change.doc.data());
@@ -98,15 +92,59 @@ eventsRouter.get('/stream', (req: Request, res: Response): void => {
         }
       },
       (err) => {
-        console.error('[Events] Firestore listener error:', err);
-        res.write(`event: error\ndata: ${JSON.stringify({ message: 'listener_error' })}\n\n`);
+        console.error('[Events] Activity listener error:', err);
+        res.write(`event: error\ndata: ${JSON.stringify({ message: 'activity_listener_error' })}\n\n`);
+      },
+    );
+
+  // ── Match-event listener ────────────────────────────────────────────────
+  // wc_match_events rows are written by the football sync whenever a match's
+  // status changes (UPCOMING → LIVE → FINISHED) or the live score updates.
+  // We push these as `event: match` frames so the frontend match card can
+  // flip its UI without a refresh or a poll.
+  // We skip the initial backlog (events older than NOW) — clients only care
+  // about transitions that happen DURING their session.
+  const sessionStart = new Date();
+  let firstMatchSnapshot = true;
+  const unsubMatch = getDb().collection(C.MATCH_EVENTS)
+    .orderBy('createdAt', 'desc')
+    .limit(20)
+    .onSnapshot(
+      (snap) => {
+        if (firstMatchSnapshot) {
+          firstMatchSnapshot = false;
+          return; // skip backlog
+        }
+        for (const change of snap.docChanges()) {
+          if (change.type !== 'added') continue;
+          const d = change.doc.data();
+          const created = d.createdAt?.toDate?.() ?? new Date();
+          if (created < sessionStart) continue; // skip rows from before this client connected
+          res.write(`event: match\ndata: ${JSON.stringify({
+            id:       change.doc.id,
+            matchId:  d.matchId,
+            kind:     d.kind,
+            from:     d.from,
+            to:       d.to,
+            scoreA:   d.scoreA ?? null,
+            scoreB:   d.scoreB ?? null,
+            minute:   d.minute ?? null,
+            teamA:    d.teamA,
+            teamB:    d.teamB,
+            createdAt: created.toISOString(),
+          })}\n\n`);
+        }
+      },
+      (err) => {
+        console.error('[Events] Match listener error:', err);
       },
     );
 
   // ── Clean up when the client disconnects ─────────────────────────────────
   req.on('close', () => {
     clearInterval(heartbeat);
-    unsubscribe();
+    unsubActivity();
+    unsubMatch();
     res.end();
   });
 });

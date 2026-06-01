@@ -34,58 +34,83 @@ export interface LiveActivityEvent {
 
 interface BacklogFrame { items: LiveActivityEvent[]; }
 
+/** Payload of an `event: match` SSE frame — emitted whenever a match
+ *  status transitions (UPCOMING → LIVE → FINISHED) or its live score updates. */
+export interface LiveMatchEvent {
+  id:        string;
+  matchId:   string;
+  kind:      'STATUS_CHANGED' | 'SCORE_UPDATED' | string;
+  from:      string | null;
+  to:        string;
+  scoreA:    number | null;
+  scoreB:    number | null;
+  minute:    string | null;
+  teamA:     string;
+  teamB:     string;
+  createdAt: string;
+}
+
 /**
- * Subscribe to the live activity stream.
+ * Subscribe to the live activity + match-event stream.
  *
- * @param token   JWT bearer token — passed via query param to EventSource.
- * @param limit   Max number of events to keep in the rolling buffer (default 5).
- * @param enabled Pause the stream when false (e.g. user signed out).
+ * Returns a rolling buffer of activity events for the ticker AND fires the
+ * onMatchEvent callback whenever a match status changes (UPCOMING → LIVE →
+ * FINISHED) or a live score updates. The caller uses onMatchEvent to patch
+ * the local match cache so cards flip state without a refresh.
+ *
+ * @param token         JWT bearer token — passed via query param to EventSource.
+ * @param limit         Max number of activity events kept in the buffer (default 5).
+ * @param enabled       Pause the stream when false (e.g. user signed out).
+ * @param onMatchEvent  Optional callback for `event: match` frames.
  */
 export function useLiveActivity(
   token: string | null,
   limit = 5,
   enabled = true,
+  onMatchEvent?: (ev: LiveMatchEvent) => void,
 ): LiveActivityEvent[] {
   const [events, setEvents] = useState<LiveActivityEvent[]>([]);
   const esRef = useRef<EventSource | null>(null);
+  // Keep the latest onMatchEvent in a ref so we don't tear down the SSE
+  // connection every time the caller passes a new closure.
+  const onMatchEventRef = useRef(onMatchEvent);
+  useEffect(() => { onMatchEventRef.current = onMatchEvent; }, [onMatchEvent]);
 
   useEffect(() => {
     if (!enabled || !token) return;
 
-    // VITE_API_URL is '' in dev (proxied) — empty origin means same-origin.
     const base = import.meta.env.VITE_API_URL ?? '';
     const url  = `${base}/api/events/stream?token=${encodeURIComponent(token)}`;
 
     const es = new EventSource(url);
     esRef.current = es;
 
-    // Initial backlog — replaces whatever's in state
     es.addEventListener('backlog', (e) => {
       try {
         const parsed = JSON.parse((e as MessageEvent).data) as BacklogFrame;
         setEvents(parsed.items.slice(0, limit));
-      } catch {
-        /* malformed frame — ignore */
-      }
+      } catch { /* ignore */ }
     });
 
-    // New event — push to front, drop the oldest
     es.addEventListener('activity', (e) => {
       try {
         const ev = JSON.parse((e as MessageEvent).data) as LiveActivityEvent;
         setEvents(prev => {
-          // Dedup by id (some browsers replay events on reconnect)
           if (prev.some(p => p.id === ev.id)) return prev;
           return [ev, ...prev].slice(0, limit);
         });
-      } catch {
-        /* malformed frame — ignore */
-      }
+      } catch { /* ignore */ }
+    });
+
+    es.addEventListener('match', (e) => {
+      try {
+        const ev = JSON.parse((e as MessageEvent).data) as LiveMatchEvent;
+        onMatchEventRef.current?.(ev);
+      } catch { /* ignore */ }
     });
 
     es.onerror = () => {
       // EventSource auto-reconnects on error; no action needed.
-      // If you want to surface "connection lost" UI, hook in here.
     };
 
     return () => {

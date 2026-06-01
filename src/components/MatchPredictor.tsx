@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Match, Prediction } from '../types';
-import { CalendarDays, Save, ShieldAlert, HelpCircle, Flame, Trophy, Award, ChevronUp, ChevronDown, Pencil } from 'lucide-react';
+import { CalendarDays, Save, ShieldAlert, HelpCircle, Flame, Trophy, Award, ChevronUp, ChevronDown, Pencil, CheckCircle } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { getMatchCoinsValue } from '../utils/scoring';
 
@@ -50,7 +50,13 @@ interface MatchPredictorProps {
   }) => void;
 }
 
-interface ConsensusStats { winA: number; draw: number; winB: number; }
+interface ConsensusStats {
+  // percentages (UPCOMING + LIVE)
+  winA: number; draw: number; winB: number;
+  // raw vote counts (FINISHED renders these instead of %)
+  winACount: number; drawCount: number; winBCount: number;
+  totalVotes: number;
+}
 
 const API_URL = import.meta.env.VITE_API_URL ?? '';
 
@@ -98,7 +104,8 @@ export default function MatchPredictor({
   const [consensusMap, setConsensusMap] = useState<Record<string, ConsensusStats>>({});
 
   useEffect(() => {
-    const upcoming = matches.filter(m => m.status === 'UPCOMING' || m.status === 'LIVE');
+    // Fetch consensus for matches with submissions open OR live (% bar is shown in both)
+    const upcoming = matches.filter(m => m.status === 'UPCOMING' || m.status === 'LIVE' || m.status === 'FINISHED');
     upcoming.forEach(async (m) => {
       try {
         const res = await fetch(`${API_URL}/api/predictions/${m.id}/consensus`, {
@@ -106,13 +113,16 @@ export default function MatchPredictor({
         });
         if (!res.ok) return;
         const data = await res.json();
-        // Backend returns { winA, draw, winB } as percentages
         setConsensusMap(prev => ({
           ...prev,
           [m.id]: {
-            winA: data.winA ?? data.winAPercent ?? 33,
-            draw: data.draw ?? data.drawPercent ?? 34,
-            winB: data.winB ?? data.winBPercent ?? 33,
+            winA: data.winA ?? 33,
+            draw: data.draw ?? 34,
+            winB: data.winB ?? 33,
+            winACount:  data.winACount  ?? 0,
+            drawCount:  data.drawCount  ?? 0,
+            winBCount:  data.winBCount  ?? 0,
+            totalVotes: data.totalVotes ?? 0,
           },
         }));
       } catch { /* ignore */ }
@@ -150,9 +160,12 @@ export default function MatchPredictor({
     setTimeout(() => setToastMessage(null), 4000);
   };
 
-  const visibleMatches = matches.filter(
-    (m) => m.status === 'UPCOMING' || m.status === 'LIVE'
-  );
+  // Show every match — UPCOMING (predict), LIVE (locked, % bar), FINISHED (score + raw counts).
+  // Sort so live matches surface first, then upcoming by kickoff, then finished most-recent first.
+  const visibleMatches = [...matches].sort((a, b) => {
+    const order: Record<string, number> = { LIVE: 0, UPCOMING: 1, FINISHED: 2 };
+    return (order[a.status] ?? 3) - (order[b.status] ?? 3);
+  });
 
   return (
     <div className="space-y-6">
@@ -281,15 +294,17 @@ export default function MatchPredictor({
         {visibleMatches.length === 0 ? (
           <div className="bg-white rounded-3xl p-12 text-center border text-slate-400 font-bold">
             <HelpCircle className="w-10 h-10 mx-auto mb-2 text-slate-300" />
-            <p className="text-sm">No upcoming matches right now.</p>
-            <p className="text-xs font-medium text-slate-400 mt-1">Check back closer to tournament start or add matches in the Admin tab.</p>
+            <p className="text-sm">No matches yet.</p>
+            <p className="text-xs font-medium text-slate-400 mt-1">Fixtures sync from football-data.org — check back shortly.</p>
           </div>
         ) : (
           visibleMatches.map((match, idx) => {
             const currentPred = predictions[match.id];
             const isEditing   = editingMatchId === match.id;
-            const stats       = consensusMap[match.id] ?? { winA: 33, draw: 33, winB: 34 };
+            const stats       = consensusMap[match.id] ?? { winA: 33, draw: 34, winB: 33, winACount: 0, drawCount: 0, winBCount: 0, totalVotes: 0 };
             const coins       = getMatchCoinsValue(match);
+            const matchLocked = match.status === 'LIVE' || match.status === 'FINISHED' || isClosed;
+            const showFinalScore = match.status === 'LIVE' || match.status === 'FINISHED';
 
             return (
               <motion.div
@@ -341,33 +356,46 @@ export default function MatchPredictor({
 
                     {/* Score / editor */}
                     <div className="flex flex-col items-center gap-1 shrink-0">
-                      {isEditing ? (
-                        /* ── Editing: spinners inline ── */
+                      {showFinalScore ? (
+                        /* ── LIVE or FINISHED: real-world score is the source of truth ── */
+                        <div className="flex flex-col items-center gap-1">
+                          <div className="flex items-center gap-2">
+                            <span className={`text-4xl font-black font-mono ${match.status === 'LIVE' ? 'text-red-600' : 'text-slate-900'}`}>
+                              {match.scoreA ?? 0}
+                            </span>
+                            <span className="text-slate-300 font-black text-xl">:</span>
+                            <span className={`text-4xl font-black font-mono ${match.status === 'LIVE' ? 'text-red-600' : 'text-slate-900'}`}>
+                              {match.scoreB ?? 0}
+                            </span>
+                          </div>
+                          {currentPred && (
+                            <span className="text-[10px] font-bold text-slate-400 mt-1">
+                              Your bet: <span className="font-mono text-[#14665F]">{currentPred.predictedScoreA}–{currentPred.predictedScoreB}</span>
+                            </span>
+                          )}
+                        </div>
+                      ) : isEditing ? (
+                        /* ── UPCOMING + editing: spinners ── */
                         <div className="flex items-center gap-3">
                           <ScoreSpinner value={localScoreA} onChange={setLocalScoreA} />
                           <span className="text-2xl font-black text-slate-300">:</span>
                           <ScoreSpinner value={localScoreB} onChange={setLocalScoreB} />
                         </div>
                       ) : currentPred ? (
-                        /* ── Saved prediction score ── */
+                        /* ── UPCOMING + saved prediction ── */
                         <div className="flex items-center gap-2">
-                          <span className="text-3xl font-black font-mono text-[#14665F]">
-                            {currentPred.predictedScoreA}
-                          </span>
+                          <span className="text-3xl font-black font-mono text-[#14665F]">{currentPred.predictedScoreA}</span>
                           <span className="text-slate-300 font-black text-xl">:</span>
-                          <span className="text-3xl font-black font-mono text-[#14665F]">
-                            {currentPred.predictedScoreB}
-                          </span>
+                          <span className="text-3xl font-black font-mono text-[#14665F]">{currentPred.predictedScoreB}</span>
                         </div>
                       ) : (
-                        /* ── No prediction yet ── */
+                        /* ── UPCOMING + no prediction yet ── */
                         <span className="text-xs bg-slate-200 text-slate-500 font-black px-4 py-1.5 rounded-full uppercase tracking-wider">
                           VS
                         </span>
                       )}
 
-                      {/* First goal badge (saved state only) */}
-                      {!isEditing && currentPred?.firstGoalTime && (
+                      {!isEditing && !showFinalScore && currentPred?.firstGoalTime && (
                         <span className="text-[9px] font-bold text-slate-400 flex items-center gap-1 mt-1">
                           <Flame className="w-3 h-3 text-orange-400" />
                           {currentPred.firstGoalTime}
@@ -382,6 +410,34 @@ export default function MatchPredictor({
                     </div>
                   </div>
                 </div>
+
+                {/* ── Status banner: LIVE or FINISHED ─────────────────── */}
+                {match.status === 'LIVE' && (
+                  <div className="mx-5 mb-3 px-4 py-2.5 bg-red-50 border border-red-200 rounded-2xl flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-2.5 w-2.5 relative">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>
+                      </span>
+                      <span className="text-[11px] font-black text-red-700 uppercase tracking-wider">
+                        Predictions Locked · Live Game
+                      </span>
+                    </div>
+                    {match.minute && (
+                      <span className="text-[10px] font-mono font-black text-red-600 bg-white px-2 py-0.5 rounded-full border border-red-200">
+                        {match.minute}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {match.status === 'FINISHED' && (
+                  <div className="mx-5 mb-3 px-4 py-2.5 bg-slate-100 border border-slate-200 rounded-2xl flex items-center gap-2">
+                    <CheckCircle className="w-4 h-4 text-slate-600" />
+                    <span className="text-[11px] font-black text-slate-700 uppercase tracking-wider">
+                      Match Finished
+                    </span>
+                  </div>
+                )}
 
                 {/* ── Row 4: First-goal time selector (editing only) ───── */}
                 <AnimatePresence>
@@ -418,60 +474,69 @@ export default function MatchPredictor({
                   )}
                 </AnimatePresence>
 
-                {/* ── Row 5: Consensus Stats ────────────────────────────── */}
+                {/* ── Row 5: Consensus stats ────────────────────────────
+                     UPCOMING + LIVE → percentages
+                     FINISHED       → raw vote counts ("27 / 2 / 20")  */}
                 <div className="px-5 pb-4 space-y-2">
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                    Guesty Consensus Forecast Stats
+                    {match.status === 'FINISHED'
+                      ? `Guesty votes (${stats.totalVotes} predicted)`
+                      : 'Guesty Consensus Forecast Stats'}
                   </p>
                   <div className="flex h-2.5 rounded-full overflow-hidden bg-slate-100">
                     <div className="bg-[#14665F] transition-all duration-500" style={{ width: `${stats.winA}%` }} />
                     <div className="bg-slate-300 transition-all duration-500" style={{ width: `${stats.draw}%` }} />
                     <div className="bg-[#072C23] transition-all duration-500" style={{ width: `${stats.winB}%` }} />
                   </div>
-                  <div className="flex justify-between text-[9px] font-bold text-slate-400 uppercase tracking-wider">
-                    <span>{match.flagA} {stats.winA}%</span>
-                    <span>Draw {stats.draw}%</span>
-                    <span>{stats.winB}% {match.flagB}</span>
+                  <div className="flex justify-between text-[9px] font-bold text-slate-500 uppercase tracking-wider">
+                    {match.status === 'FINISHED' ? (
+                      <>
+                        <span>{match.flagA} {stats.winACount} {stats.winACount === 1 ? 'vote' : 'votes'}</span>
+                        <span>Draw {stats.drawCount}</span>
+                        <span>{stats.winBCount} {match.flagB}</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>{match.flagA} {stats.winA}%</span>
+                        <span>Draw {stats.draw}%</span>
+                        <span>{stats.winB}% {match.flagB}</span>
+                      </>
+                    )}
                   </div>
                 </div>
 
-                {/* ── Row 6: CTA ────────────────────────────────────────── */}
-                <div className="px-5 pb-5">
-                  {isEditing ? (
-                    <div className="flex gap-2">
+                {/* ── Row 6: CTA — hidden once match locks (LIVE / FINISHED) ── */}
+                {!matchLocked && (
+                  <div className="px-5 pb-5">
+                    {isEditing ? (
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setEditingMatchId(null)}
+                          className="px-4 py-2.5 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl font-bold text-xs cursor-pointer transition-colors"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => saveLocalPrediction(match.id, match.teamA, match.teamB)}
+                          className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-[#14665F] text-white hover:bg-[#072C23] rounded-xl font-bold text-xs uppercase tracking-wider transition-colors active:scale-95 cursor-pointer"
+                        >
+                          <Save className="w-3.5 h-3.5" /> Save Forecast
+                        </button>
+                      </div>
+                    ) : (
                       <button
-                        onClick={() => setEditingMatchId(null)}
-                        className="px-4 py-2.5 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl font-bold text-xs cursor-pointer transition-colors"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={() => saveLocalPrediction(match.id, match.teamA, match.teamB)}
-                        className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-[#14665F] text-white hover:bg-[#072C23] rounded-xl font-bold text-xs uppercase tracking-wider transition-colors active:scale-95 cursor-pointer"
-                      >
-                        <Save className="w-3.5 h-3.5" /> Save Forecast
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => startEditing(match)}
-                      disabled={isClosed}
-                      className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all active:scale-95 cursor-pointer ${
-                        isClosed
-                          ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                          : currentPred
+                        onClick={() => startEditing(match)}
+                        className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all active:scale-95 cursor-pointer ${
+                          currentPred
                             ? 'bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200'
                             : 'bg-[#14665F] text-white hover:bg-[#072C23] shadow-sm'
-                      }`}
-                    >
-                      {currentPred ? (
-                        <><Pencil className="w-3.5 h-3.5" /> Edit Score</>
-                      ) : (
-                        'Predict Score'
-                      )}
-                    </button>
-                  )}
-                </div>
+                        }`}
+                      >
+                        {currentPred ? <><Pencil className="w-3.5 h-3.5" /> Edit Score</> : 'Predict Score'}
+                      </button>
+                    )}
+                  </div>
+                )}
 
               </motion.div>
             );

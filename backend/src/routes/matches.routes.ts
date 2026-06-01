@@ -77,7 +77,15 @@ matchesRouter.get('/debug/upstream', requireAuth, requireAdmin, async (_req, res
   }
 });
 
-// Admin override: update score/status and re-run scoring if FINISHED
+// Admin override — EXCEPTION PATH ONLY.
+//
+// The PRIMARY mechanism for status transitions (UPCOMING → LIVE → FINISHED)
+// is the football-data.org sync running every 2-30 min. That sync writes
+// authoritative status + final score and triggers scoreMatch() automatically.
+//
+// This PATCH endpoint exists only for cases where the API is wrong, delayed,
+// or unavailable — admin can correct the record manually. It should not be
+// part of the normal game flow.
 matchesRouter.patch('/:id', requireAuth, requireAdmin, async (req: Request, res: Response): Promise<void> => {
   const { id } = req.params;
   const { scoreA, scoreB, status, minute } = req.body as {

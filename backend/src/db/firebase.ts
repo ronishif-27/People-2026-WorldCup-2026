@@ -59,6 +59,7 @@ export const C = {
   SCORES:       'wc_scores',
   ACTIVITY:     'wc_activity',
   TERMS:        'wc_terms_acceptances',
+  MATCH_EVENTS: 'wc_match_events',
 } as const;
 
 export { FieldValue, Timestamp };
