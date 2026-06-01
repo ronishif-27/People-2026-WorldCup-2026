@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   CalendarDays,
@@ -218,10 +219,37 @@ async function fetchActivity(token: string): Promise<{ id: string; text: string;
   }
 }
 
+// ─── Navigation: URL <-> Tab mapping ──────────────────────────────────────────
+// Each page has a real URL so it's bookmarkable, shareable, and back-button-friendly.
+type Tab = 'Dashboard' | 'Predictions' | 'Leaderboard' | 'Rules' | 'Admin';
+
+const PATH_TO_TAB: Record<string, Tab> = {
+  '/':            'Dashboard',
+  '/predictions': 'Predictions',
+  '/leaderboard': 'Leaderboard',
+  '/rules':       'Rules',
+  '/admin':       'Admin',
+};
+
+const TAB_TO_PATH: Record<Tab, string> = {
+  Dashboard:    '/',
+  Predictions:  '/predictions',
+  Leaderboard:  '/leaderboard',
+  Rules:        '/rules',
+  Admin:        '/admin',
+};
+
 export default function App() {
-  // Navigation tab states
-  const [activeTab, setActiveTab] = useState<'Dashboard' | 'Predictions' | 'Leaderboard' | 'Rules' | 'Admin'>('Dashboard');
-  
+  // Route-driven navigation. /auth/callback uses the dashboard view; the
+  // useEffect below strips its query params and replaces the URL with /.
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const activeTab: Tab = PATH_TO_TAB[location.pathname] ?? 'Dashboard';
+  const setActiveTab = useCallback((tab: Tab) => {
+    navigate(TAB_TO_PATH[tab]);
+  }, [navigate]);
+
   // Mobile drawer state
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
@@ -287,14 +315,14 @@ export default function App() {
   useEffect(() => {
     const initAuth = async () => {
       // ── (a) OAuth redirect: read token from ?token= URL param ──────────────
+      // Backend redirects to ${FRONTEND_URL}/auth/callback?token=...
       const urlParams = new URLSearchParams(window.location.search);
       const urlToken = urlParams.get('token');
       const urlAuthError = urlParams.get('auth_error');
 
-      // Always clean sensitive params from URL immediately
+      // Always clean sensitive params from URL immediately and land on Dashboard
       if (urlToken || urlAuthError) {
-        const cleanUrl = window.location.pathname; // strip query string
-        window.history.replaceState({}, '', cleanUrl);
+        navigate('/', { replace: true });
       }
 
       if (urlAuthError) {
@@ -399,6 +427,18 @@ export default function App() {
     }, 30_000);
     return () => clearInterval(interval);
   }, [authToken]);
+
+  // Route guard: non-admins cannot deep-link to /admin
+  useEffect(() => {
+    if (!currentUser) return;
+    if (location.pathname === '/admin' && currentUser.role !== 'ADMIN') {
+      navigate('/', { replace: true });
+    }
+    // Unknown routes → Dashboard
+    if (!(location.pathname in PATH_TO_TAB) && !location.pathname.startsWith('/auth/')) {
+      navigate('/', { replace: true });
+    }
+  }, [currentUser, location.pathname, navigate]);
 
   // Live activity ticker — real-time push via Server-Sent Events.
   // The hook handles backlog + new events + auto-reconnect.
@@ -571,13 +611,16 @@ export default function App() {
 
         {/* Sidebar Nav buttons */}
         <nav className="flex-1 py-6 px-3 space-y-2">
-          {[
+          {([
             { id: 'Dashboard', name: 'Dashboard Hub', icon: LayoutDashboard },
             { id: 'Predictions', name: 'Place Predictions', icon: CalendarDays },
             { id: 'Leaderboard', name: 'Live Leaderboard', icon: Trophy },
             { id: 'Rules', name: 'How to Play', icon: Info },
-            { id: 'Admin', name: 'Admin Control Center', icon: Sliders },
-          ].map((item) => {
+            // Admin tab only visible to admins (route is also guarded server- and client-side)
+            ...(currentUser.role === 'ADMIN'
+              ? [{ id: 'Admin', name: 'Admin Control Center', icon: Sliders }]
+              : []),
+          ] as { id: Tab; name: string; icon: typeof LayoutDashboard }[]).map((item) => {
             const isActive = activeTab === item.id;
             return (
               <button
