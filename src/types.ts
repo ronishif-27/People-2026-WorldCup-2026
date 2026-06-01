@@ -36,6 +36,8 @@ export interface Employee {
   avatarColor: string;
   recentChangeType?: 'up' | 'down' | null;
   prevRank?: number;
+  totalGames?: number;  // count of predictions submitted (server: predictionCount)
+  totalWins?: number;   // exactCorrectCount + winnerCorrectCount
 }
 
 export interface DepartmentStats {

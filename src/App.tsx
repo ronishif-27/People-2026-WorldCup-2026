@@ -22,6 +22,9 @@ import confetti from 'canvas-confetti';
 import { Match, Prediction, Employee } from './types';
 import { INITIAL_MATCHES } from './data/mockData';
 
+// Live activity feed (SSE)
+import { useLiveActivity, formatActivityText, formatActivityTime } from './hooks/useLiveActivity';
+
 // Custom Components
 import LoginScreen from './components/LoginScreen';
 import Onboarding from './components/Onboarding';
@@ -176,6 +179,10 @@ interface ApiLeaderboardEntry {
   avatarUrl: string | null;
   totalPoints: number;
   exactCorrectCount: number;
+  // New columns (Live Activity PR)
+  totalGames?: number;   // = predictionCount
+  totalWins?: number;    // = exactCorrectCount + winnerCorrectCount
+  coinBalance?: number;  // = totalPoints (alias for clarity)
 }
 
 /** Fetch the global leaderboard */
@@ -343,6 +350,8 @@ export default function App() {
             points:    e.totalPoints,
             avatarUrl: e.avatarUrl ?? undefined,
             avatarColor: avatarColors[i % avatarColors.length],
+            totalGames: e.totalGames ?? 0,
+            totalWins:  e.totalWins  ?? 0,
           })));
         }
         if (apiActivity.length > 0) {
@@ -372,6 +381,9 @@ export default function App() {
   // 2. Poll leaderboard + activity every 30s while the user is logged in
   useEffect(() => {
     if (!authToken) return;
+    // Leaderboard is polled (real-time push not required — per spec, refreshing
+    // on visit / on prediction submit is acceptable). The Live Activity ticker
+    // is handled by useLiveActivity() below via SSE.
     const interval = setInterval(() => {
       fetchLeaderboard(authToken).then((lb) => {
         if (lb.length === 0) return;
@@ -380,14 +392,27 @@ export default function App() {
           id: e.userId, fullName: e.fullName, department: e.department,
           site: e.site, points: e.totalPoints, avatarUrl: e.avatarUrl ?? undefined,
           avatarColor: avatarColors[i % avatarColors.length],
+          totalGames: e.totalGames ?? 0,
+          totalWins:  e.totalWins  ?? 0,
         })));
-      });
-      fetchActivity(authToken).then((activity) => {
-        if (activity.length > 0) setActivityLogs(activity);
       });
     }, 30_000);
     return () => clearInterval(interval);
   }, [authToken]);
+
+  // Live activity ticker — real-time push via Server-Sent Events.
+  // The hook handles backlog + new events + auto-reconnect.
+  const liveActivity = useLiveActivity(authToken, 5, !!authToken);
+
+  // Project SSE events into the existing ticker shape — keeps the UI layer untouched
+  useEffect(() => {
+    if (liveActivity.length === 0) return;
+    setActivityLogs(liveActivity.map(ev => ({
+      id:   ev.id,
+      text: formatActivityText(ev),
+      time: formatActivityTime(ev.createdAt),
+    })));
+  }, [liveActivity]);
 
   // Auth: logout
   const handleLogout = useCallback(async () => {
@@ -433,8 +458,25 @@ export default function App() {
       if (!ok) {
         console.warn('[App] Failed to persist prediction for', matchId);
       } else {
-        // Refresh user stats after successful prediction
-        fetchCurrentUser(authToken).then((u) => { if (u) setCurrentUser(u); });
+        // Refresh user stats + leaderboard so the user immediately sees their
+        // updated Total Games count without waiting for the 30s poll cycle.
+        // The activity ticker updates separately via SSE.
+        Promise.all([
+          fetchCurrentUser(authToken),
+          fetchLeaderboard(authToken),
+        ]).then(([u, lb]) => {
+          if (u) setCurrentUser(u);
+          if (lb.length > 0) {
+            const avatarColors = ['from-[#14665F] to-[#072C23]','from-[#FA877D] to-[#C55A52]','from-[#8CBEBE] to-[#14665F]','from-slate-500 to-slate-700'];
+            setEmployees(lb.map((e, i) => ({
+              id: e.userId, fullName: e.fullName, department: e.department,
+              site: e.site, points: e.totalPoints, avatarUrl: e.avatarUrl ?? undefined,
+              avatarColor: avatarColors[i % avatarColors.length],
+              totalGames: e.totalGames ?? 0,
+              totalWins:  e.totalWins  ?? 0,
+            })));
+          }
+        });
       }
     }
   }, [authToken, isPredictionsClosed, forceGlobalLock]);

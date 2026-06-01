@@ -13,6 +13,7 @@ import { predictionsRouter } from './routes/predictions.routes.js';
 import { leaderboardRouter } from './routes/leaderboard.routes.js';
 import { usersRouter }       from './routes/users.routes.js';
 import { activityRouter }    from './routes/activity.routes.js';
+import { eventsRouter }      from './routes/events.routes.js';
 import { syncMatchesFromApi, hasLiveMatches } from './services/football.service.js';
 import { warmDepartmentCache } from './services/hibob.service.js';
 import { getDb } from './db/firebase.js';
@@ -48,6 +49,7 @@ app.use('/api/predictions', predictionsRouter);
 app.use('/api/leaderboard', leaderboardRouter);
 app.use('/api/users',       usersRouter);
 app.use('/api/activity',    activityRouter);
+app.use('/api/events',      eventsRouter);
 
 app.use((_req, res) => { res.status(404).json({ error: 'NOT_FOUND' }); });
 

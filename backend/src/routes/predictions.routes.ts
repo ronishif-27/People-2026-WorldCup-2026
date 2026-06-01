@@ -73,10 +73,13 @@ predictionsRouter.post('/', requireAuth, async (req: Request, res: Response): Pr
   const predRef = db.collection(C.PREDICTIONS).doc(predId);
   const existing = await predRef.get();
 
+  const isFirstTimeOnThisMatch = !existing.exists;
+  const userRefForCount = db.collection(C.USERS).doc(userId);
+
   await db.runTransaction(async (t) => {
     const matchRef = db.collection(C.MATCHES).doc(matchId);
 
-    // Remove old vote from match consensus counters
+    // Remove old vote from match consensus counters (edits do NOT bump predictionCount)
     if (existing.exists) {
       const old = existing.data()!;
       const oldKey = old.scoreA > old.scoreB ? 'winACount' : old.scoreA < old.scoreB ? 'winBCount' : 'drawCount';
@@ -96,29 +99,39 @@ predictionsRouter.post('/', requireAuth, async (req: Request, res: Response): Pr
     // Add new vote to match consensus counters
     const newKey = scoreA > scoreB ? 'winACount' : scoreA < scoreB ? 'winBCount' : 'drawCount';
     t.update(matchRef, { [newKey]: FieldValue.increment(1) });
+
+    // Atomically bump predictionCount only on the user's first submission for THIS match
+    // (edits don't inflate Total Games). Also sets hasParticipated on first ever submission.
+    if (isFirstTimeOnThisMatch) {
+      const userPatch: Record<string, unknown> = {
+        predictionCount: FieldValue.increment(1),
+      };
+      if (!userDoc.data()!.hasParticipated) {
+        userPatch.hasParticipated = true;
+      }
+      t.update(userRefForCount, userPatch);
+    }
   });
 
-  // Mark user as having participated
-  if (!userDoc.data()!.hasParticipated) {
-    await db.collection(C.USERS).doc(userId).update({ hasParticipated: true });
-  }
-
-  // Log activity event
+  // Log activity event — PREDICTED type, NO score field (privacy: PRD §6.4 — others
+  // must not see a user's prediction until they've submitted their own).
   const user = userDoc.data()!;
   const matchLabel = `${match.teamA} vs ${match.teamB}`;
-  await db.collection(C.ACTIVITY).add({
-    userId,
-    userName:   user.fullName ?? userId,
-    department: user.department ?? '',
-    site:       user.site ?? '',
-    matchId,
-    matchLabel,
-    action:     'PREDICTED',
-    score:      `${scoreA}-${scoreB}`,
-    createdAt:  new Date(),
-  });
+  if (isFirstTimeOnThisMatch) {
+    await db.collection(C.ACTIVITY).add({
+      type:       'PREDICTED',
+      userId,
+      userName:   user.fullName ?? userId,
+      department: user.department ?? '',
+      site:       user.site ?? '',
+      avatarUrl:  user.avatarUrl ?? null,
+      matchId,
+      matchLabel,
+      createdAt:  new Date(),
+    });
+  }
 
-  console.info(`[Predictions] ${userId} → ${matchLabel}: ${scoreA}-${scoreB}`);
+  console.info(`[Predictions] ${userId} → ${matchLabel}: ${scoreA}-${scoreB}${isFirstTimeOnThisMatch ? ' (first)' : ' (edit)'}`);
   res.json({ success: true, predictionId: predId, scoreA, scoreB });
 });
 

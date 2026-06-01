@@ -91,6 +91,7 @@ authRouter.get('/callback', async (req: Request, res: Response): Promise<void> =
         totalPoints:        0,
         exactCorrectCount:  0,
         winnerCorrectCount: 0,
+        predictionCount:    0,
         hasParticipated:    false,
         termsAcceptedAt:    null,
         createdAt:          new Date(),

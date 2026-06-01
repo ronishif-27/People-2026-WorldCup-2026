@@ -35,18 +35,28 @@ leaderboardRouter.get('/', requireAuth, async (req: Request, res: Response): Pro
         if (dp !== 0) return dp;
         return (bd.exactCorrectCount ?? 0) - (ad.exactCorrectCount ?? 0);
       })
-      .map((doc, i) => ({
-      rank:               i + 1,
-      userId:             doc.id,
-      fullName:           doc.data().fullName ?? doc.id,
-      department:         doc.data().department ?? '',
-      site:               doc.data().site ?? '',
-      avatarUrl:          doc.data().avatarUrl ?? null,
-      totalPoints:        doc.data().totalPoints ?? 0,
-      exactCorrectCount:  doc.data().exactCorrectCount ?? 0,
-      winnerCorrectCount: doc.data().winnerCorrectCount ?? 0,
-      hasParticipated:    doc.data().hasParticipated ?? false,
-    }));
+      .map((doc, i) => {
+        const d = doc.data();
+        const exact   = d.exactCorrectCount  ?? 0;
+        const winner  = d.winnerCorrectCount ?? 0;
+        return {
+          rank:               i + 1,
+          userId:             doc.id,
+          fullName:           d.fullName ?? doc.id,
+          department:         d.department ?? '',
+          site:               d.site ?? '',
+          avatarUrl:          d.avatarUrl ?? null,
+          // Raw counters (kept for backward compatibility with callers)
+          totalPoints:        d.totalPoints ?? 0,
+          exactCorrectCount:  exact,
+          winnerCorrectCount: winner,
+          hasParticipated:    d.hasParticipated ?? false,
+          // Columns the Leaderboard table renders directly
+          totalGames:         d.predictionCount ?? 0,
+          totalWins:          exact + winner,
+          coinBalance:        d.totalPoints ?? 0,
+        };
+      });
 
     // Apply department/site filters AFTER ranking (rank stays global)
     let filtered = allUsers;

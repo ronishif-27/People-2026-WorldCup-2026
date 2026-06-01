@@ -161,7 +161,22 @@ export async function scoreMatch(matchId: string): Promise<{ scored: number }> {
 
   await scoreBatch.commit();
 
-  // ── 4. Update user totals ──────────────────────────────────────────────────
+  // ── 4. Snapshot pre-rank for users affected by this match ─────────────────
+  // We need this BEFORE applying user deltas so we can detect rank changes.
+  const allUsersBefore = await db.collection(C.USERS).where('role', '==', 'USER').get();
+  const userMeta = new Map<string, { fullName: string; department: string; site: string; avatarUrl: string | null }>();
+  for (const d of allUsersBefore.docs) {
+    const dd = d.data();
+    userMeta.set(d.id, {
+      fullName:   dd.fullName ?? d.id,
+      department: dd.department ?? '',
+      site:       dd.site ?? '',
+      avatarUrl:  dd.avatarUrl ?? null,
+    });
+  }
+  const preRank = rankUsers(allUsersBefore.docs.map(d => ({ id: d.id, points: d.data().totalPoints ?? 0, exact: d.data().exactCorrectCount ?? 0 })));
+
+  // ── 5. Update user totals ──────────────────────────────────────────────────
   const userBatch = db.batch();
   for (const [uid, delta] of Object.entries(userDeltas)) {
     const userRef = db.collection(C.USERS).doc(uid);
@@ -173,10 +188,75 @@ export async function scoreMatch(matchId: string): Promise<{ scored: number }> {
   }
   await userBatch.commit();
 
-  // ── 5. Mark match as scored ────────────────────────────────────────────────
+  // ── 6. Post-rank snapshot + activity events ────────────────────────────────
+  const postRank = rankUsers(allUsersBefore.docs.map(d => {
+    const delta = userDeltas[d.id];
+    const pts   = (d.data().totalPoints ?? 0) + (delta?.totalPoints ?? 0);
+    const exact = (d.data().exactCorrectCount ?? 0) + (delta?.exactCorrectCount ?? 0);
+    return { id: d.id, points: pts, exact };
+  }));
+
+  const matchLabel = `${match.teamA} vs ${match.teamB}`;
+  const now = new Date();
+  const activityBatch = db.batch();
+
+  for (const [uid, delta] of Object.entries(userDeltas)) {
+    const meta = userMeta.get(uid);
+    if (!meta) continue;
+    // POINTS_EARNED — only when the user actually scored on this match
+    if (delta.totalPoints > 0) {
+      const ref = db.collection(C.ACTIVITY).doc();
+      activityBatch.set(ref, {
+        type:       'POINTS_EARNED',
+        userId:     uid,
+        userName:   meta.fullName,
+        department: meta.department,
+        site:       meta.site,
+        avatarUrl:  meta.avatarUrl,
+        matchId,
+        matchLabel,
+        points:     delta.totalPoints,
+        createdAt:  now,
+      });
+    }
+    // RANK_CHANGED — only when rank actually moved
+    const before = preRank.get(uid);
+    const after  = postRank.get(uid);
+    if (before && after && before !== after) {
+      const ref = db.collection(C.ACTIVITY).doc();
+      activityBatch.set(ref, {
+        type:       'RANK_CHANGED',
+        userId:     uid,
+        userName:   meta.fullName,
+        department: meta.department,
+        site:       meta.site,
+        avatarUrl:  meta.avatarUrl,
+        fromRank:   before,
+        toRank:     after,
+        direction:  after < before ? 'UP' : 'DOWN',
+        createdAt:  now,
+      });
+    }
+  }
+  await activityBatch.commit();
+
+  // ── 7. Mark match as scored ────────────────────────────────────────────────
   await matchRef.update({ scoredAt: new Date() });
 
   const scored = predsSnap.size;
   console.info(`[Scoring] Match ${matchId} (${match.teamA} vs ${match.teamB}) — scored ${scored} predictions`);
   return { scored };
+}
+
+/**
+ * Rank an array of {id, points, exact} entries by points DESC then exact DESC.
+ * Returns a Map<userId, rank> where rank starts at 1.
+ */
+function rankUsers(rows: Array<{ id: string; points: number; exact: number }>): Map<string, number> {
+  const sorted = rows
+    .slice()
+    .sort((a, b) => b.points - a.points || b.exact - a.exact);
+  const map = new Map<string, number>();
+  sorted.forEach((r, i) => map.set(r.id, i + 1));
+  return map;
 }
