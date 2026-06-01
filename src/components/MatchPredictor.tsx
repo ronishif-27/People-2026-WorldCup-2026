@@ -106,9 +106,14 @@ export default function MatchPredictor({
         });
         if (!res.ok) return;
         const data = await res.json();
+        // Backend returns { winA, draw, winB } as percentages
         setConsensusMap(prev => ({
           ...prev,
-          [m.id]: { winA: data.winAPercent ?? 33, draw: data.drawPercent ?? 33, winB: data.winBPercent ?? 34 },
+          [m.id]: {
+            winA: data.winA ?? data.winAPercent ?? 33,
+            draw: data.draw ?? data.drawPercent ?? 34,
+            winB: data.winB ?? data.winBPercent ?? 33,
+          },
         }));
       } catch { /* ignore */ }
     });

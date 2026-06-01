@@ -17,7 +17,8 @@ export const matchesRouter = Router();
 
 matchesRouter.get('/', requireAuth, async (_req, res) => {
   try {
-    res.json(await getAllMatches());
+    const matches = await getAllMatches();
+    res.json({ matches });
   } catch (err) {
     console.error('[Matches] GET / error:', err);
     res.status(500).json({ error: 'SERVER_ERROR' });
@@ -26,7 +27,8 @@ matchesRouter.get('/', requireAuth, async (_req, res) => {
 
 matchesRouter.get('/live', requireAuth, async (_req, res) => {
   try {
-    res.json(await getLiveMatches());
+    const matches = await getLiveMatches();
+    res.json({ matches });
   } catch (err) {
     res.status(500).json({ error: 'SERVER_ERROR' });
   }
@@ -38,6 +40,40 @@ matchesRouter.post('/sync', requireAuth, requireAdmin, async (_req, res) => {
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: 'SERVER_ERROR' });
+  }
+});
+
+// Debug: return the raw football-data.org payload + key indicators we filter on.
+// Useful for inspecting season, stage, status distributions live.
+matchesRouter.get('/debug/upstream', requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    const { fetchRawUpstreamPayload } = await import('../services/football.service.js');
+    const raw = await fetchRawUpstreamPayload();
+    const matches = raw?.matches ?? [];
+    const stageCounts: Record<string, number> = {};
+    const statusCounts: Record<string, number> = {};
+    const yearCounts: Record<string, number> = {};
+    for (const m of matches) {
+      stageCounts[m.stage]   = (stageCounts[m.stage]   ?? 0) + 1;
+      statusCounts[m.status] = (statusCounts[m.status] ?? 0) + 1;
+      const y = (m.utcDate ?? '').slice(0, 4);
+      if (y) yearCounts[y] = (yearCounts[y] ?? 0) + 1;
+    }
+    res.json({
+      indicators: {
+        competition:    raw?.competition,
+        resultSet:      raw?.resultSet,
+        firstSeason:    matches[0]?.season ?? null,
+        stageCounts,
+        statusCounts,
+        yearCounts,
+      },
+      sampleMatch: matches[0] ?? null,
+      totalMatches: matches.length,
+    });
+  } catch (err) {
+    console.error('[Matches] debug error:', err);
+    res.status(500).json({ error: 'SERVER_ERROR', message: (err as Error).message });
   }
 });
 

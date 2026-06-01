@@ -51,6 +51,17 @@ predictionsRouter.post('/', requireAuth, async (req: Request, res: Response): Pr
   }
 
   const match = matchDoc.data()!;
+
+  // PRD: predictions are only accepted for Group Stage matches.
+  // Knockout-round bets will be opened in a later phase.
+  if (match.stage !== 'GROUP_STAGE') {
+    res.status(423).json({
+      error: 'STAGE_NOT_PREDICTABLE',
+      message: 'Predictions are only open for Group Stage matches in this phase.',
+    });
+    return;
+  }
+
   const kickoffAt = match.kickoffAt instanceof Date ? match.kickoffAt : match.kickoffAt.toDate();
   if (kickoffAt <= new Date()) {
     res.status(423).json({ error: 'MATCH_LOCKED', message: 'This match has already kicked off. Predictions are locked.' });

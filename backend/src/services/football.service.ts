@@ -70,13 +70,46 @@ function formatMatchDate(utcDate: string): string {
 
 interface FdTeam  { name: string | null; }
 interface FdScore { fullTime: { home: number | null; away: number | null }; }
+interface FdSeason { id: number; startDate: string; endDate: string; }
 interface FdMatch {
   id: number; utcDate: string; status: string; stage: string;
   group: string | null; homeTeam: FdTeam; awayTeam: FdTeam;
   score: FdScore; minute?: number | null;
+  season?: FdSeason;
+}
+
+// ─── Season guard ─────────────────────────────────────────────────────────────
+// football-data.org's WC competition is shared across editions. We want ONLY
+// World Cup 2026 data — anything else (older season retrieved by accident,
+// future tournament, etc.) is rejected so we never overwrite our DB with
+// non-2026 matches.
+const WC_2026_SEASON_ID    = 2398;        // unique season ID per the API
+const WC_2026_YEAR_PREFIX  = '2026';      // utcDate / startDate must start with this
+
+function isWorldCup2026(m: FdMatch): boolean {
+  if (m.season?.id === WC_2026_SEASON_ID) return true;
+  if (m.season?.startDate?.startsWith(WC_2026_YEAR_PREFIX)) return true;
+  return m.utcDate?.startsWith(WC_2026_YEAR_PREFIX) ?? false;
 }
 
 // ─── Main sync ────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch the raw upstream football-data.org payload for /competitions/WC/matches.
+ * Used by the admin /api/matches/debug/upstream endpoint to inspect indicators
+ * (season ID, stage distribution, status distribution, year distribution).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function fetchRawUpstreamPayload(): Promise<any> {
+  if (!config.FOOTBALL_DATA_API_KEY) {
+    throw new Error('FOOTBALL_DATA_API_KEY not set');
+  }
+  const res = await axios.get(
+    `${BASE_URL}/competitions/${COMPETITION}/matches`,
+    { headers: { 'X-Auth-Token': config.FOOTBALL_DATA_API_KEY }, timeout: 10_000 }
+  );
+  return res.data;
+}
 
 export async function syncMatchesFromApi(): Promise<{ synced: number; errors: number }> {
   if (!config.FOOTBALL_DATA_API_KEY) {
@@ -96,10 +129,21 @@ export async function syncMatchesFromApi(): Promise<{ synced: number; errors: nu
     return { synced: 0, errors: 1 };
   }
 
-  let synced = 0, errors = 0;
+  // Hard-filter to WC 2026 only — if the API ever hands us a different season,
+  // we drop those rows and log it instead of writing them to Firestore.
+  const before = rawMatches.length;
+  const filtered = rawMatches.filter(isWorldCup2026);
+  const dropped  = before - filtered.length;
+  if (dropped > 0) {
+    console.warn(`[Football] Dropped ${dropped}/${before} matches — not WC 2026 season`);
+  }
 
-  for (const m of rawMatches) {
-    if (!m.homeTeam?.name || !m.awayTeam?.name) continue;
+  let synced = 0, errors = 0, skipped = 0;
+
+  for (const m of filtered) {
+    // Knockout bracket positions before teams are determined have null names —
+    // skip until the API fills them in.
+    if (!m.homeTeam?.name || !m.awayTeam?.name) { skipped++; continue; }
 
     const docId     = String(m.id);
     const matchRef  = db.collection(C.MATCHES).doc(docId);
@@ -139,7 +183,7 @@ export async function syncMatchesFromApi(): Promise<{ synced: number; errors: nu
     }
   }
 
-  console.info(`[Football] Sync complete — ${synced} upserted, ${errors} errors`);
+  console.info(`[Football] Sync complete — ${synced} upserted (${skipped} TBD bracket positions skipped), ${errors} errors`);
   return { synced, errors };
 }
 
