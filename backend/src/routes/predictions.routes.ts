@@ -10,6 +10,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { db, C, FieldValue } from '../db/firebase.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
+import { invalidate as invalidateLeaderboard } from '../services/leaderboard-cache.service.js';
 
 export const predictionsRouter = Router();
 
@@ -68,15 +69,25 @@ predictionsRouter.post('/', requireAuth, async (req: Request, res: Response): Pr
     return;
   }
 
-  // Upsert prediction — doc ID = {userId}_{matchId}
+  // Upsert prediction — doc ID = `${userId}_${matchId}`.
+  //
+  // *** CRITICAL BUSINESS RULE ***
+  // (user_id, match_id) must be UNIQUE — at most one prediction per user per
+  // match. In Firestore there is no UNIQUE constraint per se; we encode this
+  // by deriving the doc ID from the composite key. Two writes to the same
+  // path overwrite, never duplicate. Equivalent to:
+  //     CREATE UNIQUE INDEX ON wc_predictions(user_id, match_id);
   const predId  = `${userId}_${matchId}`;
   const predRef = db.collection(C.PREDICTIONS).doc(predId);
   const existing = await predRef.get();
 
+  const isFirstTimeOnThisMatch = !existing.exists;
+  const userRefForCount = db.collection(C.USERS).doc(userId);
+
   await db.runTransaction(async (t) => {
     const matchRef = db.collection(C.MATCHES).doc(matchId);
 
-    // Remove old vote from match consensus counters
+    // Remove old vote from match consensus counters (edits do NOT bump predictionCount)
     if (existing.exists) {
       const old = existing.data()!;
       const oldKey = old.scoreA > old.scoreB ? 'winACount' : old.scoreA < old.scoreB ? 'winBCount' : 'drawCount';
@@ -96,29 +107,44 @@ predictionsRouter.post('/', requireAuth, async (req: Request, res: Response): Pr
     // Add new vote to match consensus counters
     const newKey = scoreA > scoreB ? 'winACount' : scoreA < scoreB ? 'winBCount' : 'drawCount';
     t.update(matchRef, { [newKey]: FieldValue.increment(1) });
+
+    // Atomically bump predictionCount only on the user's first submission for THIS match
+    // (edits don't inflate Total Games). Also sets hasParticipated on first ever submission.
+    if (isFirstTimeOnThisMatch) {
+      const userPatch: Record<string, unknown> = {
+        predictionCount: FieldValue.increment(1),
+      };
+      if (!userDoc.data()!.hasParticipated) {
+        userPatch.hasParticipated = true;
+      }
+      t.update(userRefForCount, userPatch);
+    }
   });
 
-  // Mark user as having participated
-  if (!userDoc.data()!.hasParticipated) {
-    await db.collection(C.USERS).doc(userId).update({ hasParticipated: true });
-  }
-
-  // Log activity event
+  // Log activity event — PREDICTED type, NO score field (privacy: PRD §6.4 — others
+  // must not see a user's prediction until they've submitted their own).
   const user = userDoc.data()!;
   const matchLabel = `${match.teamA} vs ${match.teamB}`;
-  await db.collection(C.ACTIVITY).add({
-    userId,
-    userName:   user.fullName ?? userId,
-    department: user.department ?? '',
-    site:       user.site ?? '',
-    matchId,
-    matchLabel,
-    action:     'PREDICTED',
-    score:      `${scoreA}-${scoreB}`,
-    createdAt:  new Date(),
-  });
+  if (isFirstTimeOnThisMatch) {
+    await db.collection(C.ACTIVITY).add({
+      type:       'PREDICTED',
+      userId,
+      userName:   user.fullName ?? userId,
+      department: user.department ?? '',
+      site:       user.site ?? '',
+      avatarUrl:  user.avatarUrl ?? null,
+      matchId,
+      matchLabel,
+      createdAt:  new Date(),
+    });
+  }
 
-  console.info(`[Predictions] ${userId} → ${matchLabel}: ${scoreA}-${scoreB}`);
+  // Bust the leaderboard cache so the user's Total Games column reflects
+  // immediately on their next refresh. Background refresh is fire-and-forget;
+  // this response returns without waiting for it.
+  if (isFirstTimeOnThisMatch) invalidateLeaderboard();
+
+  console.info(`[Predictions] ${userId} → ${matchLabel}: ${scoreA}-${scoreB}${isFirstTimeOnThisMatch ? ' (first)' : ' (edit)'}`);
   res.json({ success: true, predictionId: predId, scoreA, scoreB });
 });
 
@@ -159,14 +185,23 @@ predictionsRouter.get('/:matchId/consensus', requireAuth, async (req: Request, r
   const total = winA + draw + winB;
 
   if (total === 0) {
-    res.json({ winA: 33, draw: 34, winB: 33, totalVotes: 0 });
+    res.json({
+      winA: 33, draw: 34, winB: 33,
+      winACount: 0, drawCount: 0, winBCount: 0,
+      totalVotes: 0,
+    });
     return;
   }
 
   res.json({
+    // Percentages (UPCOMING + LIVE states render these)
     winA:       Math.round((winA / total) * 100),
     draw:       Math.round((draw / total) * 100),
     winB:       Math.round((winB / total) * 100),
+    // Raw vote counts (FINISHED state renders these — "27 / 2 / 20")
+    winACount:  winA,
+    drawCount:  draw,
+    winBCount:  winB,
     totalVotes: total,
   });
 });

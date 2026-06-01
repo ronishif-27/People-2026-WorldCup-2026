@@ -152,7 +152,13 @@ export async function syncMatchesFromApi(): Promise<{ synced: number; errors: nu
     try {
       const existing    = await matchRef.get();
       const prevStatus  = existing.exists ? (existing.data()!.status as string) : null;
+      const prevScoreA  = existing.exists ? (existing.data()!.scoreA as number | null) : null;
+      const prevScoreB  = existing.exists ? (existing.data()!.scoreB as number | null) : null;
       const prevScored  = existing.exists ? existing.data()!.scoredAt : null;
+
+      const newScoreA = m.score.fullTime.home;
+      const newScoreB = m.score.fullTime.away;
+      const newMinute = m.minute != null ? `${m.minute}'` : null;
 
       await matchRef.set({
         externalId: docId,
@@ -166,12 +172,33 @@ export async function syncMatchesFromApi(): Promise<{ synced: number; errors: nu
         city:       '',
         stage:      mapStage(m.stage),
         status:     newStatus,
-        scoreA:     m.score.fullTime.home,
-        scoreB:     m.score.fullTime.away,
-        minute:     m.minute != null ? `${m.minute}'` : null,
+        scoreA:     newScoreA,
+        scoreB:     newScoreB,
+        minute:     newMinute,
       }, { merge: true }); // merge preserves winACount / drawCount / winBCount
 
       synced++;
+
+      // Emit a wc_match_events row whenever status OR live score changes.
+      // The SSE stream picks these up and pushes them to all connected clients
+      // so the match card flips UPCOMING → LIVE → FINISHED in real time without
+      // a refresh. Only emit on transitions, not on every sync, to keep cost down.
+      const statusChanged = prevStatus !== null && prevStatus !== newStatus;
+      const scoreChanged  = newStatus === 'LIVE' && (prevScoreA !== newScoreA || prevScoreB !== newScoreB);
+      if (statusChanged || scoreChanged) {
+        await db.collection(C.MATCH_EVENTS).add({
+          matchId:   docId,
+          kind:      statusChanged ? 'STATUS_CHANGED' : 'SCORE_UPDATED',
+          from:      prevStatus,
+          to:        newStatus,
+          scoreA:    newScoreA,
+          scoreB:    newScoreB,
+          minute:    newMinute,
+          teamA:     m.homeTeam.name,
+          teamB:     m.awayTeam.name,
+          createdAt: new Date(),
+        });
+      }
 
       if (newStatus === 'FINISHED' && prevStatus !== 'FINISHED' && !prevScored) {
         console.info(`[Football] Match ${docId} finished — triggering scoring`);

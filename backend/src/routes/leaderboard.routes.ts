@@ -3,13 +3,18 @@
  *
  * GET /api/leaderboard?limit=50&offset=0&department=X&site=Y
  *
- * Ranks all USER-role players by totalPoints DESC, exactCorrectCount DESC, fullName ASC.
- * Global rank is always computed across the unfiltered universe (PRD LB-10).
+ * Reads the in-memory leaderboard cache (per Cloud Run instance) instead of
+ * scanning wc_users on every request. The cache is refreshed every 30s by a
+ * background tick AND on every write that changes rankings (prediction save,
+ * scoreMatch). See services/leaderboard-cache.service.ts for the design.
+ *
+ * Department / site filters are applied AFTER ranking, so the rank column
+ * always reflects the user's GLOBAL position regardless of filter (PRD LB-10).
  */
 
 import { Router, Request, Response } from 'express';
-import { db, C } from '../db/firebase.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
+import { getLeaderboard } from '../services/leaderboard-cache.service.js';
 
 export const leaderboardRouter = Router();
 
@@ -20,35 +25,8 @@ leaderboardRouter.get('/', requireAuth, async (req: Request, res: Response): Pro
   const site       = req.query.site       as string | undefined;
 
   try {
-    // Fetch ALL non-admin users — sort in JS to avoid requiring a Firestore
-    // composite index on (role, totalPoints, exactCorrectCount). N is small
-    // (≤ a few hundred employees), so client-side sort is the simpler choice.
-    const allSnap = await db.collection(C.USERS)
-      .where('role', '==', 'USER')
-      .get();
+    const allUsers = await getLeaderboard();
 
-    const allUsers = allSnap.docs
-      .slice()
-      .sort((a, b) => {
-        const ad = a.data(), bd = b.data();
-        const dp = (bd.totalPoints ?? 0) - (ad.totalPoints ?? 0);
-        if (dp !== 0) return dp;
-        return (bd.exactCorrectCount ?? 0) - (ad.exactCorrectCount ?? 0);
-      })
-      .map((doc, i) => ({
-      rank:               i + 1,
-      userId:             doc.id,
-      fullName:           doc.data().fullName ?? doc.id,
-      department:         doc.data().department ?? '',
-      site:               doc.data().site ?? '',
-      avatarUrl:          doc.data().avatarUrl ?? null,
-      totalPoints:        doc.data().totalPoints ?? 0,
-      exactCorrectCount:  doc.data().exactCorrectCount ?? 0,
-      winnerCorrectCount: doc.data().winnerCorrectCount ?? 0,
-      hasParticipated:    doc.data().hasParticipated ?? false,
-    }));
-
-    // Apply department/site filters AFTER ranking (rank stays global)
     let filtered = allUsers;
     if (department) filtered = filtered.filter(u => u.department === department);
     if (site)       filtered = filtered.filter(u => u.site === site);

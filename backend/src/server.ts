@@ -13,8 +13,10 @@ import { predictionsRouter } from './routes/predictions.routes.js';
 import { leaderboardRouter } from './routes/leaderboard.routes.js';
 import { usersRouter }       from './routes/users.routes.js';
 import { activityRouter }    from './routes/activity.routes.js';
+import { eventsRouter }      from './routes/events.routes.js';
 import { syncMatchesFromApi, hasLiveMatches } from './services/football.service.js';
 import { warmDepartmentCache } from './services/hibob.service.js';
+import { startBackgroundRefresh as startLeaderboardRefresh, refresh as refreshLeaderboard } from './services/leaderboard-cache.service.js';
 import { getDb } from './db/firebase.js';
 
 const app = express();
@@ -48,6 +50,7 @@ app.use('/api/predictions', predictionsRouter);
 app.use('/api/leaderboard', leaderboardRouter);
 app.use('/api/users',       usersRouter);
 app.use('/api/activity',    activityRouter);
+app.use('/api/events',      eventsRouter);
 
 app.use((_req, res) => { res.status(404).json({ error: 'NOT_FOUND' }); });
 
@@ -76,6 +79,15 @@ async function start(): Promise<void> {
   });
 
   warmDepartmentCache().catch(e => console.warn('[HiBob] Cache warm-up failed:', e));
+
+  // Warm the leaderboard cache and start the 30s background refresh.
+  // Per-instance cache eliminates ~200x of the read amplification from
+  // client polling — see services/leaderboard-cache.service.ts.
+  refreshLeaderboard()
+    .then(rows => console.log(`✅ Leaderboard cache warm (${rows.length} users)`))
+    .catch(e => console.warn('[Leaderboard] initial warm failed:', e));
+  startLeaderboardRefresh();
+
   await syncMatchesFromApi();
 
   let syncTimer: ReturnType<typeof setTimeout>;

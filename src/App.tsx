@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   CalendarDays,
@@ -13,7 +14,8 @@ import {
   Sliders,
   CheckCircle,
   HelpCircle,
-  Award
+  Award,
+  Coins,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import confetti from 'canvas-confetti';
@@ -21,6 +23,9 @@ import confetti from 'canvas-confetti';
 // Types
 import { Match, Prediction, Employee } from './types';
 import { INITIAL_MATCHES } from './data/mockData';
+
+// Live activity feed (SSE)
+import { useLiveActivity, formatActivityText, formatActivityTime } from './hooks/useLiveActivity';
 
 // Custom Components
 import LoginScreen from './components/LoginScreen';
@@ -63,7 +68,7 @@ interface ApiUser {
   role: 'USER' | 'ADMIN';
   termsAccepted: boolean;
   hasParticipated: boolean;
-  totalPoints: number;
+  coinBalance: number;
   exactCorrectCount: number;
 }
 
@@ -174,8 +179,10 @@ interface ApiLeaderboardEntry {
   department: string;
   site: string;
   avatarUrl: string | null;
-  totalPoints: number;
   exactCorrectCount: number;
+  totalGames: number;   // = predictionCount
+  totalWins: number;    // = exactCorrectCount + winnerCorrectCount
+  coinBalance: number;  // single source of earned currency
 }
 
 /** Fetch the global leaderboard */
@@ -211,10 +218,37 @@ async function fetchActivity(token: string): Promise<{ id: string; text: string;
   }
 }
 
+// ─── Navigation: URL <-> Tab mapping ──────────────────────────────────────────
+// Each page has a real URL so it's bookmarkable, shareable, and back-button-friendly.
+type Tab = 'Dashboard' | 'Predictions' | 'Leaderboard' | 'Rules' | 'Admin';
+
+const PATH_TO_TAB: Record<string, Tab> = {
+  '/':            'Dashboard',
+  '/predictions': 'Predictions',
+  '/leaderboard': 'Leaderboard',
+  '/rules':       'Rules',
+  '/admin':       'Admin',
+};
+
+const TAB_TO_PATH: Record<Tab, string> = {
+  Dashboard:    '/',
+  Predictions:  '/predictions',
+  Leaderboard:  '/leaderboard',
+  Rules:        '/rules',
+  Admin:        '/admin',
+};
+
 export default function App() {
-  // Navigation tab states
-  const [activeTab, setActiveTab] = useState<'Dashboard' | 'Predictions' | 'Leaderboard' | 'Rules' | 'Admin'>('Dashboard');
-  
+  // Route-driven navigation. /auth/callback uses the dashboard view; the
+  // useEffect below strips its query params and replaces the URL with /.
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const activeTab: Tab = PATH_TO_TAB[location.pathname] ?? 'Dashboard';
+  const setActiveTab = useCallback((tab: Tab) => {
+    navigate(TAB_TO_PATH[tab]);
+  }, [navigate]);
+
   // Mobile drawer state
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
@@ -280,14 +314,14 @@ export default function App() {
   useEffect(() => {
     const initAuth = async () => {
       // ── (a) OAuth redirect: read token from ?token= URL param ──────────────
+      // Backend redirects to ${FRONTEND_URL}/auth/callback?token=...
       const urlParams = new URLSearchParams(window.location.search);
       const urlToken = urlParams.get('token');
       const urlAuthError = urlParams.get('auth_error');
 
-      // Always clean sensitive params from URL immediately
+      // Always clean sensitive params from URL immediately and land on Dashboard
       if (urlToken || urlAuthError) {
-        const cleanUrl = window.location.pathname; // strip query string
-        window.history.replaceState({}, '', cleanUrl);
+        navigate('/', { replace: true });
       }
 
       if (urlAuthError) {
@@ -340,9 +374,11 @@ export default function App() {
             fullName:  e.fullName,
             department: e.department,
             site:      e.site,
-            points:    e.totalPoints,
+            points:    e.coinBalance,
             avatarUrl: e.avatarUrl ?? undefined,
             avatarColor: avatarColors[i % avatarColors.length],
+            totalGames: e.totalGames ?? 0,
+            totalWins:  e.totalWins  ?? 0,
           })));
         }
         if (apiActivity.length > 0) {
@@ -372,22 +408,62 @@ export default function App() {
   // 2. Poll leaderboard + activity every 30s while the user is logged in
   useEffect(() => {
     if (!authToken) return;
+    // Leaderboard is polled (real-time push not required — per spec, refreshing
+    // on visit / on prediction submit is acceptable). The Live Activity ticker
+    // is handled by useLiveActivity() below via SSE.
     const interval = setInterval(() => {
       fetchLeaderboard(authToken).then((lb) => {
         if (lb.length === 0) return;
         const avatarColors = ['from-[#14665F] to-[#072C23]','from-[#FA877D] to-[#C55A52]','from-[#8CBEBE] to-[#14665F]','from-slate-500 to-slate-700'];
         setEmployees(lb.map((e, i) => ({
           id: e.userId, fullName: e.fullName, department: e.department,
-          site: e.site, points: e.totalPoints, avatarUrl: e.avatarUrl ?? undefined,
+          site: e.site, points: e.coinBalance, avatarUrl: e.avatarUrl ?? undefined,
           avatarColor: avatarColors[i % avatarColors.length],
+          totalGames: e.totalGames ?? 0,
+          totalWins:  e.totalWins  ?? 0,
         })));
-      });
-      fetchActivity(authToken).then((activity) => {
-        if (activity.length > 0) setActivityLogs(activity);
       });
     }, 30_000);
     return () => clearInterval(interval);
   }, [authToken]);
+
+  // Route guard: non-admins cannot deep-link to /admin
+  useEffect(() => {
+    if (!currentUser) return;
+    if (location.pathname === '/admin' && currentUser.role !== 'ADMIN') {
+      navigate('/', { replace: true });
+    }
+    // Unknown routes → Dashboard
+    if (!(location.pathname in PATH_TO_TAB) && !location.pathname.startsWith('/auth/')) {
+      navigate('/', { replace: true });
+    }
+  }, [currentUser, location.pathname, navigate]);
+
+  // Live activity ticker — real-time push via Server-Sent Events.
+  // Also handles `event: match` frames to flip match cards UPCOMING → LIVE →
+  // FINISHED in real time as football-data.org reports transitions.
+  const liveActivity = useLiveActivity(authToken, 5, !!authToken, (ev) => {
+    setMatches((prev) => prev.map((m) => {
+      if (m.id !== ev.matchId) return m;
+      return {
+        ...m,
+        status: ev.to as Match['status'],
+        scoreA: ev.scoreA,
+        scoreB: ev.scoreB,
+        minute: ev.minute ?? undefined,
+      };
+    }));
+  });
+
+  // Project SSE events into the existing ticker shape — keeps the UI layer untouched
+  useEffect(() => {
+    if (liveActivity.length === 0) return;
+    setActivityLogs(liveActivity.map(ev => ({
+      id:   ev.id,
+      text: formatActivityText(ev),
+      time: formatActivityTime(ev.createdAt),
+    })));
+  }, [liveActivity]);
 
   // Auth: logout
   const handleLogout = useCallback(async () => {
@@ -433,15 +509,32 @@ export default function App() {
       if (!ok) {
         console.warn('[App] Failed to persist prediction for', matchId);
       } else {
-        // Refresh user stats after successful prediction
-        fetchCurrentUser(authToken).then((u) => { if (u) setCurrentUser(u); });
+        // Refresh user stats + leaderboard so the user immediately sees their
+        // updated Total Games count without waiting for the 30s poll cycle.
+        // The activity ticker updates separately via SSE.
+        Promise.all([
+          fetchCurrentUser(authToken),
+          fetchLeaderboard(authToken),
+        ]).then(([u, lb]) => {
+          if (u) setCurrentUser(u);
+          if (lb.length > 0) {
+            const avatarColors = ['from-[#14665F] to-[#072C23]','from-[#FA877D] to-[#C55A52]','from-[#8CBEBE] to-[#14665F]','from-slate-500 to-slate-700'];
+            setEmployees(lb.map((e, i) => ({
+              id: e.userId, fullName: e.fullName, department: e.department,
+              site: e.site, points: e.coinBalance, avatarUrl: e.avatarUrl ?? undefined,
+              avatarColor: avatarColors[i % avatarColors.length],
+              totalGames: e.totalGames ?? 0,
+              totalWins:  e.totalWins  ?? 0,
+            })));
+          }
+        });
       }
     }
   }, [authToken, isPredictionsClosed, forceGlobalLock]);
 
   // Server-authoritative stats — refreshed after each prediction save
   const correctGuessesCount = currentUser?.exactCorrectCount ?? 0;
-  const coinBalance = currentUser?.totalPoints ?? 0;
+  const coinBalance = currentUser?.coinBalance ?? 0;
 
   // No local simulation — leaderboard and activity are populated from real API calls
 
@@ -529,13 +622,16 @@ export default function App() {
 
         {/* Sidebar Nav buttons */}
         <nav className="flex-1 py-6 px-3 space-y-2">
-          {[
+          {([
             { id: 'Dashboard', name: 'Dashboard Hub', icon: LayoutDashboard },
             { id: 'Predictions', name: 'Place Predictions', icon: CalendarDays },
             { id: 'Leaderboard', name: 'Live Leaderboard', icon: Trophy },
             { id: 'Rules', name: 'How to Play', icon: Info },
-            { id: 'Admin', name: 'Admin Control Center', icon: Sliders },
-          ].map((item) => {
+            // Admin tab only visible to admins (route is also guarded server- and client-side)
+            ...(currentUser.role === 'ADMIN'
+              ? [{ id: 'Admin', name: 'Admin Control Center', icon: Sliders }]
+              : []),
+          ] as { id: Tab; name: string; icon: typeof LayoutDashboard }[]).map((item) => {
             const isActive = activeTab === item.id;
             return (
               <button
@@ -610,7 +706,14 @@ export default function App() {
           </div>
 
           {/* User Score Stats bar */}
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            {/* Coin balance — server-authoritative coinBalance */}
+            <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-100 rounded-full border border-amber-200 select-none">
+              <Coins className="w-4 h-4 text-amber-600" strokeWidth={2.5} />
+              <span className="font-mono font-black text-xs text-amber-700">
+                {coinBalance.toLocaleString()}
+              </span>
+            </div>
             <div className="flex items-center gap-1.5 px-3 py-1 bg-[#14665F]/10 rounded-full border border-[#14665F]/20 select-none">
               <CheckCircle className="w-4 h-4 text-[#14665F]" />
               <span className="font-mono font-black text-xs text-[#14665F]">
