@@ -10,6 +10,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { db, C, FieldValue } from '../db/firebase.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
+import { invalidate as invalidateLeaderboard } from '../services/leaderboard-cache.service.js';
 
 export const predictionsRouter = Router();
 
@@ -137,6 +138,11 @@ predictionsRouter.post('/', requireAuth, async (req: Request, res: Response): Pr
       createdAt:  new Date(),
     });
   }
+
+  // Bust the leaderboard cache so the user's Total Games column reflects
+  // immediately on their next refresh. Background refresh is fire-and-forget;
+  // this response returns without waiting for it.
+  if (isFirstTimeOnThisMatch) invalidateLeaderboard();
 
   console.info(`[Predictions] ${userId} → ${matchLabel}: ${scoreA}-${scoreB}${isFirstTimeOnThisMatch ? ' (first)' : ' (edit)'}`);
   res.json({ success: true, predictionId: predId, scoreA, scoreB });

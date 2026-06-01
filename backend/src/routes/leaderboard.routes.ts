@@ -3,13 +3,18 @@
  *
  * GET /api/leaderboard?limit=50&offset=0&department=X&site=Y
  *
- * Ranks all USER-role players by coinBalance DESC, exactCorrectCount DESC, fullName ASC.
- * Global rank is always computed across the unfiltered universe (PRD LB-10).
+ * Reads the in-memory leaderboard cache (per Cloud Run instance) instead of
+ * scanning wc_users on every request. The cache is refreshed every 30s by a
+ * background tick AND on every write that changes rankings (prediction save,
+ * scoreMatch). See services/leaderboard-cache.service.ts for the design.
+ *
+ * Department / site filters are applied AFTER ranking, so the rank column
+ * always reflects the user's GLOBAL position regardless of filter (PRD LB-10).
  */
 
 import { Router, Request, Response } from 'express';
-import { db, C } from '../db/firebase.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
+import { getLeaderboard } from '../services/leaderboard-cache.service.js';
 
 export const leaderboardRouter = Router();
 
@@ -20,47 +25,8 @@ leaderboardRouter.get('/', requireAuth, async (req: Request, res: Response): Pro
   const site       = req.query.site       as string | undefined;
 
   try {
-    // Fetch ALL non-admin users — sort in JS to avoid requiring a Firestore
-    // composite index on (role, coinBalance, exactCorrectCount). N is small
-    // (≤ a few hundred employees), so client-side sort is the simpler choice.
-    const allSnap = await db.collection(C.USERS)
-      .where('role', '==', 'USER')
-      .get();
+    const allUsers = await getLeaderboard();
 
-    // Legacy fallback: pre-rewrite docs used `totalPoints` for the same field.
-    const coinsOf = (d: FirebaseFirestore.DocumentData) =>
-      (d.coinBalance ?? d.totalPoints ?? 0) as number;
-
-    const allUsers = allSnap.docs
-      .slice()
-      .sort((a, b) => {
-        const ad = a.data(), bd = b.data();
-        const dc = coinsOf(bd) - coinsOf(ad);
-        if (dc !== 0) return dc;
-        return (bd.exactCorrectCount ?? 0) - (ad.exactCorrectCount ?? 0);
-      })
-      .map((doc, i) => {
-        const d = doc.data();
-        const exact   = d.exactCorrectCount  ?? 0;
-        const winner  = d.winnerCorrectCount ?? 0;
-        return {
-          rank:               i + 1,
-          userId:             doc.id,
-          fullName:           d.fullName ?? doc.id,
-          department:         d.department ?? '',
-          site:               d.site ?? '',
-          avatarUrl:          d.avatarUrl ?? null,
-          exactCorrectCount:  exact,
-          winnerCorrectCount: winner,
-          hasParticipated:    d.hasParticipated ?? false,
-          // Columns the Leaderboard table renders directly
-          totalGames:         d.predictionCount ?? 0,
-          totalWins:          exact + winner,
-          coinBalance:        coinsOf(d),
-        };
-      });
-
-    // Apply department/site filters AFTER ranking (rank stays global)
     let filtered = allUsers;
     if (department) filtered = filtered.filter(u => u.department === department);
     if (site)       filtered = filtered.filter(u => u.site === site);

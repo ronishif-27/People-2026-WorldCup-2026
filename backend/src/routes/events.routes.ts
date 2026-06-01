@@ -35,7 +35,7 @@ interface ActivityPayload {
   avatarUrl: string | null;
   matchLabel?: string;
   matchId?: string;
-  points?: number;
+  coins?: number;        // COINS_EARNED payload
   fromRank?: number;
   toRank?: number;
   direction?: 'UP' | 'DOWN';

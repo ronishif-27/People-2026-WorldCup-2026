@@ -21,6 +21,7 @@
  */
 
 import { db, C, FieldValue } from '../db/firebase.js';
+import { invalidate as invalidateLeaderboard } from './leaderboard-cache.service.js';
 
 const STAGE_COIN_VALUE: Record<string, number> = {
   GROUP_STAGE:   250,
@@ -272,6 +273,11 @@ export async function scoreMatch(matchId: string): Promise<{ scored: number }> {
 
   // ── 7. Mark match as scored ────────────────────────────────────────────────
   await matchRef.update({ scoredAt: new Date() });
+
+  // Bust leaderboard cache so the next read across all instances picks up the
+  // post-scoring coin balances + new ranks. Other instances will catch up via
+  // their own 30s background tick within ~30s.
+  invalidateLeaderboard();
 
   const scored = predsSnap.size;
   console.info(`[Scoring] Match ${matchId} (${match.teamA} vs ${match.teamB}) — scored ${scored} predictions`);

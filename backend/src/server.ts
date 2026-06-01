@@ -16,6 +16,7 @@ import { activityRouter }    from './routes/activity.routes.js';
 import { eventsRouter }      from './routes/events.routes.js';
 import { syncMatchesFromApi, hasLiveMatches } from './services/football.service.js';
 import { warmDepartmentCache } from './services/hibob.service.js';
+import { startBackgroundRefresh as startLeaderboardRefresh, refresh as refreshLeaderboard } from './services/leaderboard-cache.service.js';
 import { getDb } from './db/firebase.js';
 
 const app = express();
@@ -78,6 +79,15 @@ async function start(): Promise<void> {
   });
 
   warmDepartmentCache().catch(e => console.warn('[HiBob] Cache warm-up failed:', e));
+
+  // Warm the leaderboard cache and start the 30s background refresh.
+  // Per-instance cache eliminates ~200x of the read amplification from
+  // client polling — see services/leaderboard-cache.service.ts.
+  refreshLeaderboard()
+    .then(rows => console.log(`✅ Leaderboard cache warm (${rows.length} users)`))
+    .catch(e => console.warn('[Leaderboard] initial warm failed:', e));
+  startLeaderboardRefresh();
+
   await syncMatchesFromApi();
 
   let syncTimer: ReturnType<typeof setTimeout>;
