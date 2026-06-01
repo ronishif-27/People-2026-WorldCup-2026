@@ -18,7 +18,8 @@ usersRouter.get('/me/stats', requireAuth, async (req: Request, res: Response): P
       db.collection(C.USERS).doc(userId).get(),
       db.collection(C.PREDICTIONS).where('userId', '==', userId).get(),
       db.collection(C.SCORES).where('userId', '==', userId).get(),
-      db.collection(C.USERS).where('role', '==', 'USER').orderBy('totalPoints', 'desc').get(),
+      // Sort in JS to avoid requiring a composite (role, totalPoints) index
+      db.collection(C.USERS).where('role', '==', 'USER').get(),
     ]);
 
     if (!userDoc.exists) { res.status(404).json({ error: 'USER_NOT_FOUND' }); return; }
@@ -26,7 +27,10 @@ usersRouter.get('/me/stats', requireAuth, async (req: Request, res: Response): P
     const u             = userDoc.data()!;
     const placedBets    = predsSnap.size;
     const correctGuesses = scoresSnap.docs.filter(d => d.data().type === 'EXACT' || d.data().type === 'WINNER').length;
-    const rank          = allUsersSnap.docs.findIndex(d => d.id === userId) + 1;
+    const sortedUsers   = allUsersSnap.docs.slice().sort(
+      (a, b) => (b.data().totalPoints ?? 0) - (a.data().totalPoints ?? 0)
+    );
+    const rank          = sortedUsers.findIndex(d => d.id === userId) + 1;
 
     res.json({
       placedBets,

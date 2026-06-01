@@ -20,14 +20,22 @@ leaderboardRouter.get('/', requireAuth, async (req: Request, res: Response): Pro
   const site       = req.query.site       as string | undefined;
 
   try {
-    // Fetch ALL non-admin users ordered by points (for accurate global ranking)
+    // Fetch ALL non-admin users — sort in JS to avoid requiring a Firestore
+    // composite index on (role, totalPoints, exactCorrectCount). N is small
+    // (≤ a few hundred employees), so client-side sort is the simpler choice.
     const allSnap = await db.collection(C.USERS)
       .where('role', '==', 'USER')
-      .orderBy('totalPoints', 'desc')
-      .orderBy('exactCorrectCount', 'desc')
       .get();
 
-    const allUsers = allSnap.docs.map((doc, i) => ({
+    const allUsers = allSnap.docs
+      .slice()
+      .sort((a, b) => {
+        const ad = a.data(), bd = b.data();
+        const dp = (bd.totalPoints ?? 0) - (ad.totalPoints ?? 0);
+        if (dp !== 0) return dp;
+        return (bd.exactCorrectCount ?? 0) - (ad.exactCorrectCount ?? 0);
+      })
+      .map((doc, i) => ({
       rank:               i + 1,
       userId:             doc.id,
       fullName:           doc.data().fullName ?? doc.id,

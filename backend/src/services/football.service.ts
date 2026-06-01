@@ -175,8 +175,16 @@ export async function getAllMatches(): Promise<MatchResponse[]> {
 }
 
 export async function getLiveMatches(): Promise<MatchResponse[]> {
-  const snap = await db.collection(C.MATCHES).where('status', '==', 'LIVE').orderBy('kickoffAt', 'asc').get();
-  return snap.docs.map(d => toMatchResponse(d.data(), d.id));
+  // Sort in JS to avoid requiring a composite (status, kickoffAt) index — N is tiny
+  const snap = await db.collection(C.MATCHES).where('status', '==', 'LIVE').get();
+  return snap.docs
+    .slice()
+    .sort((a, b) => {
+      const aT = a.data().kickoffAt?.toMillis?.() ?? 0;
+      const bT = b.data().kickoffAt?.toMillis?.() ?? 0;
+      return aT - bT;
+    })
+    .map(d => toMatchResponse(d.data(), d.id));
 }
 
 export async function hasLiveMatches(): Promise<boolean> {

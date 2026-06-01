@@ -138,27 +138,33 @@ authRouter.get('/me', requireAuth, async (req: Request, res: Response): Promise<
 });
 
 // ─── Onboarding ───────────────────────────────────────────────────────────────
-
-const VALID_DEPARTMENTS = new Set([
-  'AI Team','Customer Experience','Customer Success','Data & Information Systems',
-  'Engineering','Finance','G&A','Guest Communication Services','IS','Legal',
-  'Marketing','Onboarding','Operations','Payments','People','Product',
-  'Product Design','Professional Services','R&D','RU G&A','RU R&D','Sales',
-  'StaySense Tech','Strategy',
-]);
-
-const VALID_SITES = new Set([
-  'Australia','Canada','Colombia','Dubai','France','Ireland','Israel','Mexico',
-  'Netherlands','Panama','Philippines','Poland','Portugal','Remote','Spain',
-  'Sweden','Switzerland','Turkey','UK','Ukraine','US - East','US - West',
-]);
+//
+// We validate department + site against the LIVE HiBob lists (same source the
+// frontend dropdown is populated from). A stale hardcoded list would reject
+// real HiBob values like "AI" that don't match our compile-time guess.
 
 authRouter.post('/onboarding', requireAuth, async (req: Request, res: Response): Promise<void> => {
   const { department, site } = req.body as { department?: string; site?: string };
 
   if (!department || !site) { res.status(400).json({ error: 'MISSING_FIELDS' }); return; }
-  if (!VALID_DEPARTMENTS.has(department)) { res.status(400).json({ error: 'INVALID_DEPARTMENT' }); return; }
-  if (!VALID_SITES.has(site)) { res.status(400).json({ error: 'INVALID_SITE' }); return; }
+
+  // Validate against the same lists the frontend dropdown was populated from.
+  // Lazy-import to avoid pulling hibob.service into module init order.
+  const { getHiBobDepartments, getHiBobSites } = await import('../services/hibob.service.js');
+  const [departments, sites] = await Promise.all([getHiBobDepartments(), getHiBobSites()]);
+  // Case-insensitive trim match so minor whitespace/casing differences pass.
+  const norm = (s: string) => s.trim().toLowerCase();
+  const deptSet = new Set(departments.map(norm));
+  const siteSet = new Set(sites.map(norm));
+
+  if (!deptSet.has(norm(department))) {
+    console.warn(`[Auth] /onboarding INVALID_DEPARTMENT: "${department}" not in HiBob list (${departments.length} entries)`);
+    res.status(400).json({ error: 'INVALID_DEPARTMENT' }); return;
+  }
+  if (!siteSet.has(norm(site))) {
+    console.warn(`[Auth] /onboarding INVALID_SITE: "${site}" not in HiBob list (${sites.length} entries)`);
+    res.status(400).json({ error: 'INVALID_SITE' }); return;
+  }
 
   try {
     const now     = new Date();
