@@ -17,7 +17,7 @@ import { useEffect, useRef, useState } from 'react';
 
 export interface LiveActivityEvent {
   id:         string;
-  type:       'PREDICTED' | 'POINTS_EARNED' | 'RANK_CHANGED' | string;
+  type:       'PREDICTED' | 'COINS_EARNED' | 'RANK_CHANGED' | string;
   userId:     string;
   userName:   string;
   department: string;
@@ -25,7 +25,7 @@ export interface LiveActivityEvent {
   avatarUrl:  string | null;
   matchId?:   string;
   matchLabel?: string;
-  points?:    number;
+  coins?:     number;   // populated on COINS_EARNED events
   fromRank?:  number;
   toRank?:    number;
   direction?: 'UP' | 'DOWN';
@@ -131,8 +131,8 @@ export function formatActivityText(ev: LiveActivityEvent): string {
   switch (ev.type) {
     case 'PREDICTED':
       return `${who} placed a prediction on ${ev.matchLabel ?? 'a match'}`;
-    case 'POINTS_EARNED':
-      return `${who} earned ${ev.points ?? 0} 🪙 on ${ev.matchLabel ?? 'a match'}`;
+    case 'COINS_EARNED':
+      return `${who} earned ${ev.coins ?? 0} coins on ${ev.matchLabel ?? 'a match'}`;
     case 'RANK_CHANGED':
       if (ev.direction === 'UP' && ev.toRank != null) {
         return `${who} climbed to rank #${ev.toRank}`;

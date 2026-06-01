@@ -163,7 +163,7 @@ function toPayload(id: string, d: FirebaseFirestore.DocumentData): ActivityPaylo
     avatarUrl:  d.avatarUrl ?? null,
     matchId:    d.matchId,
     matchLabel: d.matchLabel,
-    points:     d.points,
+    coins:      d.coins ?? d.points,   // legacy: old docs used `points`
     fromRank:   d.fromRank,
     toRank:     d.toRank,
     direction:  d.direction,

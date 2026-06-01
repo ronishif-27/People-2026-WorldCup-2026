@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Match, Prediction } from '../types';
-import { CalendarDays, Save, ShieldAlert, HelpCircle, Flame, Trophy, Award, ChevronUp, ChevronDown, Pencil, CheckCircle } from 'lucide-react';
+import { CalendarDays, Save, ShieldAlert, HelpCircle, Flame, Trophy, Award, ChevronUp, ChevronDown, Pencil, CheckCircle, Coins } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { getMatchCoinsValue } from '../utils/scoring';
 
@@ -326,8 +326,9 @@ export default function MatchPredictor({
                         Live {match.minute ? `· ${match.minute}` : ''}
                       </span>
                     )}
-                    <span className="bg-yellow-400/10 text-yellow-700 text-[10px] font-black px-2 py-0.5 rounded-md select-none">
-                      {coins} 🪙
+                    <span className="bg-amber-100 text-amber-700 text-[10px] font-black px-2 py-0.5 rounded-md select-none flex items-center gap-1">
+                      {coins}
+                      <Coins className="w-3 h-3" strokeWidth={2.5} />
                     </span>
                   </div>
                 </div>

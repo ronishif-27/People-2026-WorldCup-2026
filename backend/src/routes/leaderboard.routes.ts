@@ -3,7 +3,7 @@
  *
  * GET /api/leaderboard?limit=50&offset=0&department=X&site=Y
  *
- * Ranks all USER-role players by totalPoints DESC, exactCorrectCount DESC, fullName ASC.
+ * Ranks all USER-role players by coinBalance DESC, exactCorrectCount DESC, fullName ASC.
  * Global rank is always computed across the unfiltered universe (PRD LB-10).
  */
 
@@ -21,18 +21,22 @@ leaderboardRouter.get('/', requireAuth, async (req: Request, res: Response): Pro
 
   try {
     // Fetch ALL non-admin users — sort in JS to avoid requiring a Firestore
-    // composite index on (role, totalPoints, exactCorrectCount). N is small
+    // composite index on (role, coinBalance, exactCorrectCount). N is small
     // (≤ a few hundred employees), so client-side sort is the simpler choice.
     const allSnap = await db.collection(C.USERS)
       .where('role', '==', 'USER')
       .get();
 
+    // Legacy fallback: pre-rewrite docs used `totalPoints` for the same field.
+    const coinsOf = (d: FirebaseFirestore.DocumentData) =>
+      (d.coinBalance ?? d.totalPoints ?? 0) as number;
+
     const allUsers = allSnap.docs
       .slice()
       .sort((a, b) => {
         const ad = a.data(), bd = b.data();
-        const dp = (bd.totalPoints ?? 0) - (ad.totalPoints ?? 0);
-        if (dp !== 0) return dp;
+        const dc = coinsOf(bd) - coinsOf(ad);
+        if (dc !== 0) return dc;
         return (bd.exactCorrectCount ?? 0) - (ad.exactCorrectCount ?? 0);
       })
       .map((doc, i) => {
@@ -46,15 +50,13 @@ leaderboardRouter.get('/', requireAuth, async (req: Request, res: Response): Pro
           department:         d.department ?? '',
           site:               d.site ?? '',
           avatarUrl:          d.avatarUrl ?? null,
-          // Raw counters (kept for backward compatibility with callers)
-          totalPoints:        d.totalPoints ?? 0,
           exactCorrectCount:  exact,
           winnerCorrectCount: winner,
           hasParticipated:    d.hasParticipated ?? false,
           // Columns the Leaderboard table renders directly
           totalGames:         d.predictionCount ?? 0,
           totalWins:          exact + winner,
-          coinBalance:        d.totalPoints ?? 0,
+          coinBalance:        coinsOf(d),
         };
       });
 

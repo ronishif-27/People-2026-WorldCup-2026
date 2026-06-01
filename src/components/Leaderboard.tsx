@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Employee } from '../types';
-import { 
-  Trophy, Building, MapPin, Zap, Flame, Award, 
-  Search, Star 
+import {
+  Trophy, Building, MapPin, Zap, Flame, Award,
+  Search, Star, Coins,
 } from 'lucide-react';
 
 interface ActivityLog {
@@ -245,8 +245,9 @@ export default function Leaderboard({ employees, userId, activityLogs }: Leaderb
                     {/* Coins Balance */}
                     <div className="col-span-2 text-right flex md:block justify-between items-center bg-slate-50 md:bg-transparent px-3 py-2 md:p-0 rounded-xl mt-1 md:mt-0 border border-slate-100 md:border-transparent">
                       <span className="md:hidden text-[10px] font-black text-slate-400 uppercase">Coins:</span>
-                      <span className="font-mono font-black text-sm text-[#14665F] flex items-center justify-end gap-0.5 select-none">
-                        {emp.points.toLocaleString()} 🪙
+                      <span className="font-mono font-black text-sm text-[#14665F] flex items-center justify-end gap-1 select-none">
+                        {emp.points.toLocaleString()}
+                        <Coins className="w-3.5 h-3.5 text-amber-500" strokeWidth={2.5} />
                       </span>
                     </div>
                   </motion.div>

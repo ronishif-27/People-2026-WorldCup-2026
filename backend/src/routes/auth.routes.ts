@@ -88,7 +88,7 @@ authRouter.get('/callback', async (req: Request, res: Response): Promise<void> =
     if (!existing.exists) {
       await userRef.set({
         ...userData,
-        totalPoints:        0,
+        coinBalance:        0,
         exactCorrectCount:  0,
         winnerCorrectCount: 0,
         predictionCount:    0,
@@ -128,7 +128,7 @@ authRouter.get('/me', requireAuth, async (req: Request, res: Response): Promise<
         role:             u.role,
         termsAccepted:    u.termsAcceptedAt !== null,
         hasParticipated:  u.hasParticipated ?? false,
-        totalPoints:      u.totalPoints ?? 0,
+        coinBalance:      u.coinBalance ?? u.totalPoints ?? 0,
         exactCorrectCount: u.exactCorrectCount ?? 0,
       },
     });

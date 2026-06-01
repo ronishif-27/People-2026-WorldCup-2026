@@ -68,7 +68,14 @@ predictionsRouter.post('/', requireAuth, async (req: Request, res: Response): Pr
     return;
   }
 
-  // Upsert prediction — doc ID = {userId}_{matchId}
+  // Upsert prediction — doc ID = `${userId}_${matchId}`.
+  //
+  // *** CRITICAL BUSINESS RULE ***
+  // (user_id, match_id) must be UNIQUE — at most one prediction per user per
+  // match. In Firestore there is no UNIQUE constraint per se; we encode this
+  // by deriving the doc ID from the composite key. Two writes to the same
+  // path overwrite, never duplicate. Equivalent to:
+  //     CREATE UNIQUE INDEX ON wc_predictions(user_id, match_id);
   const predId  = `${userId}_${matchId}`;
   const predRef = db.collection(C.PREDICTIONS).doc(predId);
   const existing = await predRef.get();

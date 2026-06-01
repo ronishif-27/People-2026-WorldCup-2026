@@ -14,7 +14,8 @@ import {
   Sliders,
   CheckCircle,
   HelpCircle,
-  Award
+  Award,
+  Coins,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import confetti from 'canvas-confetti';
@@ -67,7 +68,7 @@ interface ApiUser {
   role: 'USER' | 'ADMIN';
   termsAccepted: boolean;
   hasParticipated: boolean;
-  totalPoints: number;
+  coinBalance: number;
   exactCorrectCount: number;
 }
 
@@ -178,12 +179,10 @@ interface ApiLeaderboardEntry {
   department: string;
   site: string;
   avatarUrl: string | null;
-  totalPoints: number;
   exactCorrectCount: number;
-  // New columns (Live Activity PR)
-  totalGames?: number;   // = predictionCount
-  totalWins?: number;    // = exactCorrectCount + winnerCorrectCount
-  coinBalance?: number;  // = totalPoints (alias for clarity)
+  totalGames: number;   // = predictionCount
+  totalWins: number;    // = exactCorrectCount + winnerCorrectCount
+  coinBalance: number;  // single source of earned currency
 }
 
 /** Fetch the global leaderboard */
@@ -375,7 +374,7 @@ export default function App() {
             fullName:  e.fullName,
             department: e.department,
             site:      e.site,
-            points:    e.totalPoints,
+            points:    e.coinBalance,
             avatarUrl: e.avatarUrl ?? undefined,
             avatarColor: avatarColors[i % avatarColors.length],
             totalGames: e.totalGames ?? 0,
@@ -418,7 +417,7 @@ export default function App() {
         const avatarColors = ['from-[#14665F] to-[#072C23]','from-[#FA877D] to-[#C55A52]','from-[#8CBEBE] to-[#14665F]','from-slate-500 to-slate-700'];
         setEmployees(lb.map((e, i) => ({
           id: e.userId, fullName: e.fullName, department: e.department,
-          site: e.site, points: e.totalPoints, avatarUrl: e.avatarUrl ?? undefined,
+          site: e.site, points: e.coinBalance, avatarUrl: e.avatarUrl ?? undefined,
           avatarColor: avatarColors[i % avatarColors.length],
           totalGames: e.totalGames ?? 0,
           totalWins:  e.totalWins  ?? 0,
@@ -522,7 +521,7 @@ export default function App() {
             const avatarColors = ['from-[#14665F] to-[#072C23]','from-[#FA877D] to-[#C55A52]','from-[#8CBEBE] to-[#14665F]','from-slate-500 to-slate-700'];
             setEmployees(lb.map((e, i) => ({
               id: e.userId, fullName: e.fullName, department: e.department,
-              site: e.site, points: e.totalPoints, avatarUrl: e.avatarUrl ?? undefined,
+              site: e.site, points: e.coinBalance, avatarUrl: e.avatarUrl ?? undefined,
               avatarColor: avatarColors[i % avatarColors.length],
               totalGames: e.totalGames ?? 0,
               totalWins:  e.totalWins  ?? 0,
@@ -535,7 +534,7 @@ export default function App() {
 
   // Server-authoritative stats — refreshed after each prediction save
   const correctGuessesCount = currentUser?.exactCorrectCount ?? 0;
-  const coinBalance = currentUser?.totalPoints ?? 0;
+  const coinBalance = currentUser?.coinBalance ?? 0;
 
   // No local simulation — leaderboard and activity are populated from real API calls
 
@@ -707,7 +706,14 @@ export default function App() {
           </div>
 
           {/* User Score Stats bar */}
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            {/* Coin balance — server-authoritative coinBalance */}
+            <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-100 rounded-full border border-amber-200 select-none">
+              <Coins className="w-4 h-4 text-amber-600" strokeWidth={2.5} />
+              <span className="font-mono font-black text-xs text-amber-700">
+                {coinBalance.toLocaleString()}
+              </span>
+            </div>
             <div className="flex items-center gap-1.5 px-3 py-1 bg-[#14665F]/10 rounded-full border border-[#14665F]/20 select-none">
               <CheckCircle className="w-4 h-4 text-[#14665F]" />
               <span className="font-mono font-black text-xs text-[#14665F]">

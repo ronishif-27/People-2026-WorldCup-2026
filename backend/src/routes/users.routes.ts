@@ -18,7 +18,7 @@ usersRouter.get('/me/stats', requireAuth, async (req: Request, res: Response): P
       db.collection(C.USERS).doc(userId).get(),
       db.collection(C.PREDICTIONS).where('userId', '==', userId).get(),
       db.collection(C.SCORES).where('userId', '==', userId).get(),
-      // Sort in JS to avoid requiring a composite (role, totalPoints) index
+      // Sort in JS to avoid requiring a composite (role, coinBalance) index
       db.collection(C.USERS).where('role', '==', 'USER').get(),
     ]);
 
@@ -27,8 +27,9 @@ usersRouter.get('/me/stats', requireAuth, async (req: Request, res: Response): P
     const u             = userDoc.data()!;
     const placedBets    = predsSnap.size;
     const correctGuesses = scoresSnap.docs.filter(d => d.data().type === 'EXACT' || d.data().type === 'WINNER').length;
+    const coinsOf = (d: FirebaseFirestore.DocumentData) => (d.coinBalance ?? d.totalPoints ?? 0) as number;
     const sortedUsers   = allUsersSnap.docs.slice().sort(
-      (a, b) => (b.data().totalPoints ?? 0) - (a.data().totalPoints ?? 0)
+      (a, b) => coinsOf(b.data()) - coinsOf(a.data())
     );
     const rank          = sortedUsers.findIndex(d => d.id === userId) + 1;
 
@@ -36,7 +37,7 @@ usersRouter.get('/me/stats', requireAuth, async (req: Request, res: Response): P
       placedBets,
       correctGuesses,
       savedOutrights:     0,
-      totalPoints:        u.totalPoints ?? 0,
+      coinBalance:        coinsOf(u),
       exactCorrectCount:  u.exactCorrectCount ?? 0,
       winnerCorrectCount: u.winnerCorrectCount ?? 0,
       rank:               rank > 0 ? rank : null,
