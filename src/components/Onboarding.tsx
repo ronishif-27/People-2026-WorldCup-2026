@@ -1,232 +1,275 @@
-import { useState } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { Trophy, HelpCircle, Flame, Clock, ArrowRight, Sparkles, CheckCircle, ShieldAlert, Award } from 'lucide-react';
+/**
+ * Onboarding.tsx
+ *
+ * Shown ONCE per user immediately after their first Google login.
+ * Collects Department + Site (HiBob fallback) and records T&C acceptance.
+ *
+ * On submit → POST /api/auth/onboarding  (stores dept, site, termsAcceptedAt in DB)
+ * On success → calls onComplete({ department, site }) so App updates in-memory user.
+ */
+
+import { useState, useEffect } from 'react';
+import { motion } from 'motion/react';
+import { Trophy, CheckCircle, ChevronDown, Loader2 } from 'lucide-react';
+
+// Fallback lists — used if the /api/auth/lists fetch fails
+const FALLBACK_DEPARTMENTS = [
+  'AI','Customer Experience','Customer Success','Data & Information Systems',
+  'Engineering','Finance','G&A','Guest Communication Services','Legal',
+  'Marketing','Onboarding','Operations','Payments','People','Product',
+  'Product Design','Professional Services','R&D','RU G&A','Sales',
+  'StaySense Tech','Strategy',
+];
+
+const FALLBACK_SITES = [
+  'Australia','Canada','Colombia','Dubai','France','Ireland','Israel','Mexico',
+  'Netherlands','Panama','Philippines','Poland','Portugal','Remote','Spain',
+  'Sweden','Switzerland','Turkey','UK','Ukraine','US - East','US - West',
+];
+
+const TERMS_TEXT = `Welcome to the Guessy by Guesty!
+
+Hi Guesties! Before you make your first predictions, please review and accept our quick ground rules to keep the competition fair and fun for everyone:
+This game is open to all active internal employees of Guesty. Participation is 100% voluntary.
+Fair Play & Limitations: Limit of one entry/prediction per person per match. Any entries submitted after the matches start will not be counted.
+Prizes are non-transferable and cannot be exchanged for cash. Please note that depending on your local country's tax regulations, the value of the prize may be subject to standard gift tax reporting on your payroll.
+The app will securely process your employee ID, name, and prediction data solely for the purposes of calculating scores, displaying leaderboards, and distributing prizes.
+The Organizing Team reserves the right to make the final determination in the event of a tie, technical glitch, or dispute.
+By clicking "I Accept", you agree to these rules and are ready to lock in your first guess!`;
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 interface OnboardingProps {
-  onComplete: () => void;
+  currentUser: { email: string; fullName: string; department: string; site: string };
+  authToken: string;
+  onComplete: (updates: { department: string; site: string }) => void;
 }
 
-export default function Onboarding({ onComplete }: OnboardingProps) {
-  // Phase 1 is 'WELCOME', Phase 2 is 'GAMBLING_RULES'
-  const [phase, setPhase] = useState<'WELCOME' | 'BETTING_RULES'>('WELCOME');
-  const [bettingStep, setBettingStep] = useState(0);
+const API_URL = import.meta.env.VITE_API_URL ?? '';
 
-  const welcomeSteps = [
-    {
-      title: "Predict Exact Scores",
-      desc: "For each matchup, enter your estimated goals for both teams rather than just guessing generic wins.",
-      icon: Trophy,
-      color: "text-[#14665F] bg-[#14665F]/10",
-    },
-    {
-      title: "Observe Lockout Deadline",
-      desc: "Predictions lock strictly on June 10th. Make sure to complete all submissions before the countdown clock hits zero.",
-      icon: ShieldAlert,
-      color: "text-rose-600 bg-rose-100",
-    },
-    {
-      title: "Climb the Global Board",
-      desc: "Show off your expertise, rise through the Guesty ranks, and lift your department or site to international glory.",
-      icon: Sparkles,
-      color: "text-[#072C23] bg-[#072C23]/10",
-    },
-  ];
+export default function Onboarding({ currentUser, authToken, onComplete }: OnboardingProps) {
+  // Live lists from HiBob — loaded on mount
+  const [departments, setDepartments] = useState<string[]>(FALLBACK_DEPARTMENTS);
+  const [sites, setSites]             = useState<string[]>(FALLBACK_SITES);
+  const [listsLoading, setListsLoading] = useState(true);
 
-  const bettingRulesSteps = [
-    {
-      title: "Step 1: Predict & Score",
-      subtitle: "The Coin & Point Rewards",
-      desc: "Earn points and coins by guessing exact scores correctly. Strong strategic predictions boost your standings, while precise goal-timing earns extra bonus awards to climb the leaderboard!",
-      badge: "SCORES",
-      icon: Award,
-      color: "from-amber-500 to-yellow-400",
-    },
-    {
-      title: "Step 2: First Goal Specials",
-      subtitle: "Game-Specific Outrights",
-      desc: "For each match you forecast, submit the predicted interval of the First Goal (e.g., 1-15', 76-90+'). This outright prediction is match-specific to keep your strategy hyper-focused!",
-      badge: "SPECIALS",
-      icon: Clock,
-      color: "from-[#14665F] to-[#8CBEBE]",
-    },
-    {
-      title: "Step 3: Win Department Standing",
-      subtitle: "Inter-Office Rivalry",
-      desc: "Your score dynamically feeds into your department's and office site's overall score. Help your local team beat New York, Kyiv, or Barcelona!",
-      badge: "GLORY",
-      icon: Flame,
-      color: "from-[#072C23] to-[#14665F]",
-    },
-  ];
+  // Pre-select HiBob data if available, otherwise leave blank so user must pick
+  const [department, setDepartment] = useState<string>(
+    currentUser.department !== 'Unknown' ? currentUser.department : ''
+  );
+  const [site, setSite] = useState<string>(
+    currentUser.site !== 'Unknown' ? currentUser.site : ''
+  );
+  const [termsChecked, setTermsChecked] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Fetch live department + site lists from HiBob via backend
+  useEffect(() => {
+    fetch(`${API_URL}/api/auth/lists`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    })
+      .then((r) => r.ok ? r.json() : Promise.reject(r.status))
+      .then((data: { departments: string[]; sites: string[] }) => {
+        if (data.departments?.length) setDepartments(data.departments);
+        if (data.sites?.length)       setSites(data.sites);
+        // Re-validate pre-selected values against fresh lists
+        if (currentUser.department !== 'Unknown' && data.departments?.includes(currentUser.department)) {
+          setDepartment(currentUser.department);
+        }
+        if (currentUser.site !== 'Unknown' && data.sites?.includes(currentUser.site)) {
+          setSite(currentUser.site);
+        }
+      })
+      .catch(() => { /* keep fallback lists */ })
+      .finally(() => setListsLoading(false));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const canSubmit = department && site && termsChecked && !submitting;
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      const res = await fetch(`${API_URL}/api/auth/onboarding`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ department, site }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.message ?? 'Something went wrong. Please try again.');
+      }
+
+      onComplete({ department, site });
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to save. Please try again.');
+      setSubmitting(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/85 backdrop-blur-sm p-4 overflow-y-auto">
-      <AnimatePresence mode="wait">
-        {phase === 'WELCOME' ? (
-          <motion.div
-            key="welcome-phase"
-            initial={{ opacity: 0, scale: 0.95, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: -20 }}
-            className="bg-white rounded-3xl p-6 md:p-8 max-w-lg w-full shadow-2xl relative overflow-hidden my-auto border-t-4 border-[#14665F]"
-            id="welcome-modal"
-          >
-            {/* Design accents */}
-            <div className="absolute top-0 right-0 w-32 h-32 bg-[#14665F]/5 blur-3xl rounded-full" />
-            <div className="absolute -bottom-10 -left-10 w-40 h-40 bg-[#072C23]/5 blur-3xl rounded-full" />
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 24 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        transition={{ duration: 0.35, ease: 'easeOut' }}
+        className="bg-white rounded-3xl w-full max-w-lg shadow-2xl relative overflow-hidden my-auto border-t-4 border-[#14665F]"
+      >
+        {/* Decorative glow */}
+        <div className="absolute top-0 right-0 w-40 h-40 bg-[#14665F]/5 blur-3xl rounded-full pointer-events-none" />
+        <div className="absolute -bottom-10 -left-10 w-48 h-48 bg-[#072C23]/5 blur-3xl rounded-full pointer-events-none" />
 
-            {/* Header */}
-            <div className="flex flex-col items-center text-center mb-8 relative z-10">
-              <div className="w-16 h-16 bg-[#14665F] rounded-2xl flex items-center justify-center shadow-lg shadow-[#14665F]/30 mb-4 animate-bounce">
-                <Trophy className="w-8 h-8 text-white" />
+        {/* Header */}
+        <div className="bg-[#072C23] px-6 py-7 text-white text-center relative">
+          <div className="w-14 h-14 bg-[#14665F] rounded-2xl flex items-center justify-center shadow-lg shadow-[#14665F]/30 mx-auto mb-3">
+            <Trophy className="w-7 h-7 text-white" />
+          </div>
+          <h2 className="text-xl font-black tracking-tight">Welcome, {currentUser.fullName.split(' ')[0]}! 🎉</h2>
+          <p className="text-white/60 text-xs font-medium mt-1">
+            One quick step before your first prediction
+          </p>
+        </div>
+
+        <div className="p-6 space-y-5 relative z-10">
+
+          {/* Email — read-only */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
+              Your Guesty Email
+            </label>
+            <div className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-semibold text-slate-500 select-none">
+              {currentUser.email}
+            </div>
+          </div>
+
+          {/* Department dropdown */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
+              Your Department <span className="text-rose-500">*</span>
+            </label>
+            <div className="relative">
+              <select
+                value={department}
+                onChange={(e) => setDepartment(e.target.value)}
+                disabled={listsLoading}
+                className="w-full appearance-none px-4 py-3 bg-white border-2 border-slate-200 rounded-2xl text-sm font-semibold text-slate-800 focus:outline-none focus:border-[#14665F] transition-colors cursor-pointer pr-10 disabled:opacity-50"
+              >
+                <option value="" disabled>
+                  {listsLoading ? 'Loading departments…' : 'Select your department…'}
+                </option>
+                {departments.map((d) => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
+              {listsLoading
+                ? <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 animate-spin" />
+                : <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+              }
+            </div>
+          </div>
+
+          {/* Site / Office dropdown */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
+              Your Office / Location <span className="text-rose-500">*</span>
+            </label>
+            <div className="relative">
+              <select
+                value={site}
+                onChange={(e) => setSite(e.target.value)}
+                disabled={listsLoading}
+                className="w-full appearance-none px-4 py-3 bg-white border-2 border-slate-200 rounded-2xl text-sm font-semibold text-slate-800 focus:outline-none focus:border-[#14665F] transition-colors cursor-pointer pr-10 disabled:opacity-50"
+              >
+                <option value="" disabled>
+                  {listsLoading ? 'Loading offices…' : 'Select your office…'}
+                </option>
+                {sites.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+              {listsLoading
+                ? <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 animate-spin" />
+                : <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+              }
+            </div>
+          </div>
+
+          {/* T&C scrollable box */}
+          <div className="space-y-2">
+            <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
+              Terms &amp; Conditions
+            </label>
+            <div className="h-36 overflow-y-auto bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs text-slate-600 leading-relaxed font-medium whitespace-pre-line">
+              {TERMS_TEXT}
+            </div>
+          </div>
+
+          {/* T&C checkbox */}
+          <label className="flex items-start gap-3 cursor-pointer group select-none">
+            <div className="relative mt-0.5 shrink-0">
+              <input
+                type="checkbox"
+                checked={termsChecked}
+                onChange={(e) => setTermsChecked(e.target.checked)}
+                className="sr-only"
+              />
+              <div
+                className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all ${
+                  termsChecked
+                    ? 'bg-[#14665F] border-[#14665F]'
+                    : 'bg-white border-slate-300 group-hover:border-[#14665F]/50'
+                }`}
+              >
+                {termsChecked && <CheckCircle className="w-3.5 h-3.5 text-white" />}
               </div>
-              <h2 className="text-2xl md:text-3xl font-black text-[#14665F] tracking-tight">
-                Guesty World Cup <span className="text-[#072C23]">2026</span>
-              </h2>
-              <p className="text-slate-500 text-sm mt-1 font-semibold">
-                Global Office Prediction Hub
-              </p>
             </div>
+            <span className="text-xs font-semibold text-slate-600 leading-relaxed">
+              I have read and agree to the Terms &amp; Conditions above. I understand the rules of the Guesty World Cup Prediction Challenge.
+            </span>
+          </label>
 
-            {/* 3 Steps */}
-            <div className="space-y-5 relative z-10 mb-8">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest text-center border-b pb-2">
-                How the Game Works (3 Steps)
-              </h3>
-              {welcomeSteps.map((step, idx) => {
-                const Icon = step.icon;
-                return (
-                  <div key={idx} className="flex gap-4 items-start p-3 hover:bg-slate-50 rounded-xl transition-colors">
-                    <div className={`p-3 rounded-xl shrink-0 ${step.color}`}>
-                      <Icon className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-slate-800 text-base flex items-center gap-2">
-                        <span className="text-[#14665F] font-mono text-xs bg-slate-100 px-1.5 py-0.5 rounded">0{idx+1}</span>
-                        {step.title}
-                      </h4>
-                      <p className="text-slate-500 text-xs mt-1 leading-relaxed font-medium">
-                        {step.desc}
-                      </p>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+          {/* Error */}
+          {error && (
+            <p className="text-xs font-bold text-rose-600 bg-rose-50 border border-rose-200 px-4 py-2.5 rounded-xl text-center">
+              {error}
+            </p>
+          )}
 
-            {/* CTA */}
-            <button
-              onClick={() => setPhase('BETTING_RULES')}
-              className="w-full flex items-center justify-center gap-2 py-4 bg-[#14665F] text-white hover:bg-[#072C23] rounded-2xl font-bold tracking-wide transition-all duration-300 shadow-lg shadow-[#14665F]/20 transform active:scale-95 group text-sm md:text-base cursor-pointer"
-              id="btn-start-now"
-            >
-              Start Now
-              <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-            </button>
-          </motion.div>
-        ) : (
-          <motion.div
-            key="betting-phase"
-            initial={{ opacity: 0, scale: 0.95, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: -20 }}
-            className="bg-white rounded-3xl p-6 md:p-8 max-w-lg w-full shadow-2xl relative overflow-hidden my-auto border-t-4 border-[#072C23]"
-            id="betting-modal"
+          {/* Submit button */}
+          <button
+            onClick={handleSubmit}
+            disabled={!canSubmit}
+            className={`w-full py-4 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all duration-200 ${
+              canSubmit
+                ? 'bg-[#14665F] text-white hover:bg-[#072C23] shadow-lg shadow-[#14665F]/20 active:scale-95 cursor-pointer'
+                : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+            }`}
           >
-            {/* Theme header dots */}
-            <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-[#14665F] via-[#072C23] to-[#FA877D]" />
+            {submitting ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Saving…
+              </>
+            ) : (
+              <>
+                <CheckCircle className="w-4 h-4" />
+                I Accept &amp; Let's Play! ⚽
+              </>
+            )}
+          </button>
 
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b pb-4 mb-6">
-              <div>
-                <span className="text-[10px] font-bold text-[#14665F] bg-[#14665F]/10 px-2.5 py-1 rounded select-none">FORECAST RULES</span>
-                <h3 className="text-base sm:text-lg font-black text-slate-800 mt-1.5 tracking-tight">Prediction Hub Onboarding</h3>
-              </div>
-              <span className="text-xs font-mono font-bold text-slate-400 shrink-0">Step {bettingStep + 1} of 3</span>
-            </div>
-
-            {/* Current card slider style */}
-            <div className="min-h-[220px] flex flex-col justify-center">
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={bettingStep}
-                  initial={{ opacity: 0, x: 20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
-                  transition={{ duration: 0.2 }}
-                  className="space-y-4"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className={`p-4 rounded-2xl text-white bg-gradient-to-tr ${bettingRulesSteps[bettingStep].color} shadow-md`}>
-                      {(() => {
-                        const Icon = bettingRulesSteps[bettingStep].icon;
-                        return <Icon className="w-6 h-6 animate-pulse" />;
-                      })()}
-                    </div>
-                    <div>
-                      <span className="text-xs font-extrabold text-[#14665F] uppercase tracking-widest bg-[#14665F]/10 px-2 py-0.5 rounded">
-                        {bettingRulesSteps[bettingStep].badge}
-                      </span>
-                      <h4 className="text-lg font-extrabold text-slate-900 leading-tight mt-1">
-                        {bettingRulesSteps[bettingStep].title}
-                      </h4>
-                    </div>
-                  </div>
-
-                  <p className="text-sm font-semibold text-slate-500 italic">
-                    {bettingRulesSteps[bettingStep].subtitle}
-                  </p>
-                  <p className="text-slate-600 text-sm leading-relaxed bg-slate-50 p-4 rounded-xl border border-slate-100 font-medium">
-                    {bettingRulesSteps[bettingStep].desc}
-                  </p>
-                </motion.div>
-              </AnimatePresence>
-            </div>
-
-            {/* Pagination indicators */}
-            <div className="flex justify-center gap-2 mt-6 mb-6">
-              {[0, 1, 2].map((i) => (
-                <button
-                  key={i}
-                  onClick={() => setBettingStep(i)}
-                  className={`h-2.5 rounded-full transition-all duration-300 ${
-                    bettingStep === i ? 'w-8 bg-[#14665F]' : 'w-2.5 bg-slate-200 hover:bg-slate-300'
-                  }`}
-                />
-              ))}
-            </div>
-
-            {/* Navigation button */}
-            <div className="flex gap-3">
-              {bettingStep > 0 && (
-                <button
-                  onClick={() => setBettingStep((prev) => prev - 1)}
-                  className="px-4 py-3 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl font-bold text-sm cursor-pointer"
-                >
-                  Back
-                </button>
-              )}
-              {bettingStep < 2 ? (
-                <button
-                  onClick={() => setBettingStep((prev) => prev + 1)}
-                  className="flex-1 py-3 bg-slate-100 text-slate-800 hover:bg-slate-200 rounded-xl font-bold flex items-center justify-center gap-2 text-sm cursor-pointer"
-                >
-                  Next Step
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              ) : (
-                <button
-                  onClick={onComplete}
-                  className="flex-1 py-3 bg-[#14665F] text-white hover:bg-[#072C23] rounded-xl font-bold flex items-center justify-center gap-2 text-sm shadow-md cursor-pointer"
-                  id="btn-complete-onboarding"
-                >
-                  Let's Begin!
-                  <CheckCircle className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          <p className="text-center text-[10px] text-slate-400 font-medium">
+            This dialog only appears once. Your selections are saved to your profile.
+          </p>
+        </div>
+      </motion.div>
     </div>
   );
 }

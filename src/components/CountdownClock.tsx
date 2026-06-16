@@ -87,7 +87,7 @@ export function CountdownClock({ onDeadlineReached, onPredictClick }: CountdownC
         </div>
 
         {/* Stadium Scoreboard Clock layout */}
-        <div className="flex items-center gap-1 sm:gap-2 font-mono">
+        <div className="flex items-center gap-2 font-mono">
           {timeLeft.isExpired ? (
             <div className="flex items-center gap-2 bg-black/40 px-6 py-3 rounded-2xl border border-red-500 text-red-400">
               <AlertTriangle className="w-5 h-5 text-red-400 animate-pulse" />
@@ -97,8 +97,8 @@ export function CountdownClock({ onDeadlineReached, onPredictClick }: CountdownC
             <>
               {/* Days */}
               <div className="flex flex-col items-center">
-                <div className="bg-black/50 border border-white/10 text-white min-w-[48px] sm:min-w-[56px] px-2 py-1.5 sm:px-3 sm:py-2 rounded-2xl text-center shadow-inner">
-                  <span className="text-xl sm:text-2xl font-black tracking-wide block leading-none">
+                <div className="bg-black/50 border border-white/10 text-white min-w-[56px] px-3 py-2 rounded-2xl text-center shadow-inner">
+                  <span className="text-2xl font-black tracking-wide block leading-none">
                     {String(timeLeft.days).padStart(2, '0')}
                   </span>
                 </div>
@@ -109,8 +109,8 @@ export function CountdownClock({ onDeadlineReached, onPredictClick }: CountdownC
 
               {/* Hours */}
               <div className="flex flex-col items-center">
-                <div className="bg-black/50 border border-white/10 text-white min-w-[48px] sm:min-w-[56px] px-2 py-1.5 sm:px-3 sm:py-2 rounded-2xl text-center shadow-inner">
-                  <span className="text-xl sm:text-2xl font-black tracking-wide block leading-none">
+                <div className="bg-black/50 border border-white/10 text-white min-w-[56px] px-3 py-2 rounded-2xl text-center shadow-inner">
+                  <span className="text-2xl font-black tracking-wide block leading-none">
                     {String(timeLeft.hours).padStart(2, '0')}
                   </span>
                 </div>
@@ -121,8 +121,8 @@ export function CountdownClock({ onDeadlineReached, onPredictClick }: CountdownC
 
               {/* Minutes */}
               <div className="flex flex-col items-center">
-                <div className="bg-black/50 border border-white/10 text-white min-w-[48px] sm:min-w-[56px] px-2 py-1.5 sm:px-3 sm:py-2 rounded-2xl text-center shadow-inner">
-                  <span className="text-xl sm:text-2xl font-black tracking-wide block leading-none">
+                <div className="bg-black/50 border border-white/10 text-white min-w-[56px] px-3 py-2 rounded-2xl text-center shadow-inner">
+                  <span className="text-2xl font-black tracking-wide block leading-none">
                     {String(timeLeft.minutes).padStart(2, '0')}
                   </span>
                 </div>
@@ -133,8 +133,8 @@ export function CountdownClock({ onDeadlineReached, onPredictClick }: CountdownC
 
               {/* Seconds */}
               <div className="flex flex-col items-center">
-                <div className="bg-black/50 border border-white/10 text-white min-w-[48px] sm:min-w-[56px] px-2 py-1.5 sm:px-3 sm:py-2 rounded-2xl text-center shadow-inner text-emerald-400">
-                  <span className="text-xl sm:text-2xl font-black tracking-wide block leading-none animate-pulse">
+                <div className="bg-black/50 border border-white/10 text-white min-w-[56px] px-3 py-2 rounded-2xl text-center shadow-inner text-emerald-400">
+                  <span className="text-2xl font-black tracking-wide block leading-none animate-pulse">
                     {String(timeLeft.seconds).padStart(2, '0')}
                   </span>
                 </div>

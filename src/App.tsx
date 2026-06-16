@@ -1,27 +1,26 @@
-import { useState, useMemo, useEffect } from 'react';
-import { 
-  LayoutDashboard, 
-  CalendarDays, 
-  Trophy, 
-  Star, 
+import { useState, useMemo, useEffect, useCallback } from 'react';
+import {
+  LayoutDashboard,
+  CalendarDays,
+  Trophy,
+  Star,
   Info,
   MapPin,
-  Menu as MenuIcon, 
-  X as CloseIcon, 
+  Menu as MenuIcon,
+  X as CloseIcon,
   RotateCcw,
   LogOut,
   Sliders,
   CheckCircle,
   HelpCircle,
-  Award,
-  Coins
+  Award
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import confetti from 'canvas-confetti';
 
-// Types and Mock Data
+// Types
 import { Match, Prediction, Employee } from './types';
-import { INITIAL_MATCHES, INITIAL_EMPLOYEES } from './data/mockData';
+import { INITIAL_MATCHES } from './data/mockData';
 
 // Custom Components
 import LoginScreen from './components/LoginScreen';
@@ -32,8 +31,185 @@ import { CountdownClock } from './components/CountdownClock';
 import AdminPanel from './components/AdminPanel';
 import GuestyLogo from './components/GuestyLogo';
 
-// Scoring calculate function
-import { calculatePredictionPoints, getMatchCoinsValue } from './utils/scoring';
+
+// ─── API Client ───────────────────────────────────────────────────────────────
+
+const API_URL = import.meta.env.VITE_API_URL ?? '';
+const TOKEN_KEY = 'wc2026_token';
+
+/** Retrieve JWT from localStorage (persists for 24h — expiry enforced by server) */
+function getStoredToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+/** Save JWT to localStorage */
+function storeToken(token: string): void {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+/** Remove JWT (logout) */
+function clearToken(): void {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+/** Typed user shape returned by GET /api/auth/me */
+interface ApiUser {
+  id: string;
+  email: string;
+  fullName: string;
+  department: string;
+  site: string;
+  avatarUrl: string | null;
+  role: 'USER' | 'ADMIN';
+  termsAccepted: boolean;
+  hasParticipated: boolean;
+  totalPoints: number;
+  exactCorrectCount: number;
+}
+
+/**
+ * Calls GET /api/auth/me with the stored Bearer token.
+ * Returns the user if the token is valid, null if expired/invalid.
+ */
+async function fetchCurrentUser(token: string): Promise<ApiUser | null> {
+  try {
+    const res = await fetch(`${API_URL}/api/auth/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.user as ApiUser;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetches all World Cup matches from the backend API.
+ * Returns an empty array on any failure (frontend falls back to mock data).
+ */
+async function fetchMatches(token: string): Promise<Match[]> {
+  try {
+    const res = await fetch(`${API_URL}/api/matches`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    // API returns matches with kickoffAt (ISO); frontend Match type uses `date` string
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (data.matches ?? []).map((m: any) => ({
+      ...m,
+      // Keep the formatted date string the API already provides
+    })) as Match[];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Calls POST /api/auth/logout with the stored Bearer token.
+ * Clears the local token regardless of server response.
+ */
+async function callLogout(token: string): Promise<void> {
+  try {
+    await fetch(`${API_URL}/api/auth/logout`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    // Ignore network errors — we clear the token locally regardless
+  }
+}
+
+/** Fetch all predictions for the current user from the API */
+async function fetchUserPredictions(token: string): Promise<Record<string, Prediction>> {
+  try {
+    const res = await fetch(`${API_URL}/api/predictions/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return {};
+    const data = await res.json();
+    const map: Record<string, Prediction> = {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const p of (data.predictions ?? []) as any[]) {
+      map[p.matchId] = {
+        matchId:          p.matchId,
+        predictedScoreA:  p.scoreA,
+        predictedScoreB:  p.scoreB,
+        firstGoalTime:    p.firstGoalRange ?? '',
+        lastUpdated:      p.updatedAt ?? p.createdAt ?? new Date().toISOString(),
+      };
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
+
+/** Save a prediction to the server */
+async function postPrediction(
+  token: string,
+  matchId: string,
+  scoreA: number,
+  scoreB: number,
+  firstGoalRange?: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_URL}/api/predictions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchId, scoreA, scoreB, firstGoalRange: firstGoalRange ?? null }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+interface ApiLeaderboardEntry {
+  rank: number;
+  userId: string;
+  email: string;
+  fullName: string;
+  department: string;
+  site: string;
+  avatarUrl: string | null;
+  totalPoints: number;
+  exactCorrectCount: number;
+}
+
+/** Fetch the global leaderboard */
+async function fetchLeaderboard(token: string): Promise<ApiLeaderboardEntry[]> {
+  try {
+    const res = await fetch(`${API_URL}/api/leaderboard?limit=50`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.leaderboard ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Fetch live activity feed */
+async function fetchActivity(token: string): Promise<{ id: string; text: string; time: string }[]> {
+  try {
+    const res = await fetch(`${API_URL}/api/activity?limit=20`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (data.activity ?? []).map((a: any) => ({
+      id:   a.id,
+      text: a.description ?? a.text ?? '',
+      time: a.createdAt ? new Date(a.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+    }));
+  } catch {
+    return [];
+  }
+}
 
 export default function App() {
   // Navigation tab states
@@ -42,8 +218,15 @@ export default function App() {
   // Mobile drawer state
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
-  // Authentication State
-  const [currentUser, setCurrentUser] = useState<{ fullName: string; email: string; department: string; site: string } | null>(null);
+  // ─── Auth State ─────────────────────────────────────────────────────────────
+  // Full user object from /api/auth/me — null until verified
+  const [currentUser, setCurrentUser] = useState<ApiUser | null>(null);
+  // JWT token stored in memory (also persisted in localStorage for 24h sessions)
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  // Tracks whether the initial auth check is complete (prevents flash of login screen)
+  const [authLoading, setAuthLoading] = useState(true);
+  // Error passed from the OAuth redirect (e.g. ?auth_error=access_denied)
+  const [authError, setAuthError] = useState<string | null>(null);
 
   // Welcome / Onboarding Modal state
   const [showOnboarding, setShowOnboarding] = useState<boolean>(false);
@@ -76,12 +259,8 @@ export default function App() {
   // Employees state for real-time rank updates
   const [employees, setEmployees] = useState<Employee[]>([]);
 
-  // Real-time live activity logs ticker
-  const [activityLogs, setActivityLogs] = useState<{ id: string; text: string; time: string }[]>([
-    { id: '1', text: 'Sarah Miller (Customer Success, Tel Aviv) just placed a prediction on Brazil vs Japan!', time: '1m ago' },
-    { id: '2', text: 'Alexander Kovalenko (Engineering, Kyiv) boosted Mexico vs Germany with 2X Star!', time: '3m ago' },
-    { id: '3', text: 'David Chen (Engineering, New York) gained +250 Coins for correct outcomes!', time: '5m ago' },
-  ]);
+  // Live activity ticker — populated from /api/activity, polled every 30s
+  const [activityLogs, setActivityLogs] = useState<{ id: string; text: string; time: string }[]>([]);
 
   // Trigger global confetti burst
   const triggerCelebration = () => {
@@ -93,114 +272,151 @@ export default function App() {
     });
   };
 
-  // 1. Initial State Loading from LocalStorage on mount
+  // 1. Auth Initialization — runs once on mount
+  //    Priority order:
+  //      a) ?token= in the URL (fresh OAuth redirect from backend)
+  //      b) Token saved in localStorage (returning user within 24h)
+  //      c) No token → show login screen
   useEffect(() => {
-    // Current logged-in user
-    const profileSaved = localStorage.getItem('guesty_user_profile');
-    if (profileSaved) {
-      setCurrentUser(JSON.parse(profileSaved));
-    }
+    const initAuth = async () => {
+      // ── (a) OAuth redirect: read token from ?token= URL param ──────────────
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlToken = urlParams.get('token');
+      const urlAuthError = urlParams.get('auth_error');
 
-    // Onboarding status mapping
-    const hasSeen = localStorage.getItem('guesty_onboard_completed_v2');
-    if (hasSeen === 'true') {
-      setShowOnboarding(false);
-    } else if (profileSaved) {
-      setShowOnboarding(true);
-    }
+      // Always clean sensitive params from URL immediately
+      if (urlToken || urlAuthError) {
+        const cleanUrl = window.location.pathname; // strip query string
+        window.history.replaceState({}, '', cleanUrl);
+      }
 
-    // Matches initialization
-    const matchesSaved = localStorage.getItem('guesty_matches_v2');
-    if (matchesSaved) {
-      setMatches(JSON.parse(matchesSaved));
-    } else {
-      setMatches(INITIAL_MATCHES);
-    }
+      if (urlAuthError) {
+        setAuthError(urlAuthError);
+        setAuthLoading(false);
+        return;
+      }
 
-    // Predictions initialization with Portugal-Ghana pre-seed
-    const predictionsSaved = localStorage.getItem('guesty_predictions_v3');
-    if (predictionsSaved) {
-      setPredictions(JSON.parse(predictionsSaved));
-    } else {
-      const initialSeed = {
-        'm-finished-1': {
-          matchId: 'm-finished-1',
-          predictedScoreA: 3,
-          predictedScoreB: 0,
-          lastUpdated: new Date().toISOString()
+      const tokenToUse = urlToken ?? getStoredToken();
+
+      if (!tokenToUse) {
+        // No token anywhere — show login screen
+        setAuthLoading(false);
+        return;
+      }
+
+      // ── Verify token is still valid with the server ────────────────────────
+      const user = await fetchCurrentUser(tokenToUse);
+
+      if (!user) {
+        // Token expired or revoked — clear it and show login
+        clearToken();
+        setAuthLoading(false);
+        return;
+      }
+
+      // ── Token valid — store and hydrate ────────────────────────────────────
+      storeToken(tokenToUse);
+      setAuthToken(tokenToUse);
+      setCurrentUser(user);
+
+      // ── Load live data from backend in parallel ────────────────────────────
+      Promise.all([
+        fetchMatches(tokenToUse),
+        fetchUserPredictions(tokenToUse),
+        fetchLeaderboard(tokenToUse),
+        fetchActivity(tokenToUse),
+      ]).then(([apiMatches, apiPredictions, apiLeaderboard, apiActivity]) => {
+        if (apiMatches.length > 0) {
+          setMatches(apiMatches);
+          console.info(`[App] Loaded ${apiMatches.length} matches from API`);
         }
-      };
-      setPredictions(initialSeed);
-      localStorage.setItem('guesty_predictions_v3', JSON.stringify(initialSeed));
-    }
+        if (Object.keys(apiPredictions).length > 0) {
+          setPredictions(apiPredictions);
+        }
+        if (apiLeaderboard.length > 0) {
+          const avatarColors = ['from-[#14665F] to-[#072C23]','from-[#FA877D] to-[#C55A52]','from-[#8CBEBE] to-[#14665F]','from-slate-500 to-slate-700'];
+          setEmployees(apiLeaderboard.map((e, i) => ({
+            id:        e.userId,
+            fullName:  e.fullName,
+            department: e.department,
+            site:      e.site,
+            points:    e.totalPoints,
+            avatarUrl: e.avatarUrl ?? undefined,
+            avatarColor: avatarColors[i % avatarColors.length],
+          })));
+        }
+        if (apiActivity.length > 0) {
+          setActivityLogs(apiActivity);
+        }
+      });
 
-    // Outrights initialization
-    const outrightsSaved = localStorage.getItem('guesty_outrights_v3');
-    if (outrightsSaved) {
-      setOutrights(JSON.parse(outrightsSaved));
-    }
+      // Show onboarding if T&C not yet accepted
+      if (!user.termsAccepted) {
+        setShowOnboarding(true);
+      }
 
-    // Force Global prediction lock
+      triggerCelebration();
+      setAuthLoading(false);
+    };
+
+    // ── Bootstrap with mock matches (API will override once auth completes) ──
+    setMatches(INITIAL_MATCHES);
+
+    // ── Persist admin force-lock across reloads ────────────────────────────
     const forceLockSaved = localStorage.getItem('guesty_force_lock');
-    if (forceLockSaved === 'true') {
-      setForceGlobalLock(true);
-    }
+    if (forceLockSaved === 'true') setForceGlobalLock(true);
+
+    initAuth();
   }, []);
 
-  // 2. State Persistent synchronization
+  // 2. Poll leaderboard + activity every 30s while the user is logged in
   useEffect(() => {
-    if (matches.length > 0) {
-      localStorage.setItem('guesty_matches_v2', JSON.stringify(matches));
-    }
-  }, [matches]);
+    if (!authToken) return;
+    const interval = setInterval(() => {
+      fetchLeaderboard(authToken).then((lb) => {
+        if (lb.length === 0) return;
+        const avatarColors = ['from-[#14665F] to-[#072C23]','from-[#FA877D] to-[#C55A52]','from-[#8CBEBE] to-[#14665F]','from-slate-500 to-slate-700'];
+        setEmployees(lb.map((e, i) => ({
+          id: e.userId, fullName: e.fullName, department: e.department,
+          site: e.site, points: e.totalPoints, avatarUrl: e.avatarUrl ?? undefined,
+          avatarColor: avatarColors[i % avatarColors.length],
+        })));
+      });
+      fetchActivity(authToken).then((activity) => {
+        if (activity.length > 0) setActivityLogs(activity);
+      });
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [authToken]);
 
-  useEffect(() => {
-    localStorage.setItem('guesty_predictions_v3', JSON.stringify(predictions));
-  }, [predictions]);
+  // Auth: logout
+  const handleLogout = useCallback(async () => {
+    if (!window.confirm('Are you sure you want to sign out from the prediction portal?')) return;
+    if (authToken) await callLogout(authToken);
+    clearToken();
+    setAuthToken(null);
+    setCurrentUser(null);
+    setActiveTab('Dashboard');
+  }, [authToken]);
 
-  useEffect(() => {
-    localStorage.setItem('guesty_outrights_v3', JSON.stringify(outrights));
-  }, [outrights]);
-
-  // Auth handler
-  const handleLogin = (profile: { fullName: string; email: string; department: string; site: string }) => {
-    setCurrentUser(profile);
-    localStorage.setItem('guesty_user_profile', JSON.stringify(profile));
-    
-    // Check if onboarding needs to be shown
-    const hasSeen = localStorage.getItem('guesty_onboard_completed_v2');
-    if (hasSeen !== 'true') {
-      setShowOnboarding(true);
-    }
-    
-    triggerCelebration();
-  };
-
-  const handleLogout = () => {
-    if (window.confirm('Are you sure you want to sign out from the prediction portal?')) {
-      setCurrentUser(null);
-      localStorage.removeItem('guesty_user_profile');
-      localStorage.removeItem('guesty_onboard_completed_v2');
-      setActiveTab('Dashboard');
-    }
-  };
-
-  const handleOnboardingComplete = () => {
-    localStorage.setItem('guesty_onboard_completed_v2', 'true');
+  const handleOnboardingComplete = (updates: { department: string; site: string }) => {
+    // T&C acceptance was written to the server by the Onboarding component.
+    // Update in-memory user so the header/leaderboard show the real dept+site immediately.
+    setCurrentUser((prev) => prev ? { ...prev, ...updates, termsAccepted: true } : prev);
     setShowOnboarding(false);
     triggerCelebration();
   };
 
   const handleResetOnboarding = () => {
-    localStorage.removeItem('guesty_onboard_completed_v2');
     setShowOnboarding(true);
   };
 
-  // User Actions to record a prediction
-  const handleSavePrediction = (matchId: string, scoreA: number, scoreB: number, firstGoalTime?: string) => {
+  // User Actions to record a prediction — optimistically updates UI, persists to server
+  const handleSavePrediction = useCallback(async (matchId: string, scoreA: number, scoreB: number, firstGoalTime?: string) => {
     const isLocked = isPredictionsClosed || forceGlobalLock;
     if (isLocked) return;
-    
+
+    // Optimistic update
     setPredictions((prev) => ({
       ...prev,
       [matchId]: {
@@ -211,115 +427,23 @@ export default function App() {
         lastUpdated: new Date().toISOString(),
       },
     }));
-  };
 
-  // Dynamic calculated correct guesses count for finished matches
-  const correctGuessesCount = useMemo(() => {
-    let count = 0;
-    matches.forEach((match) => {
-      if (match.status === 'FINISHED') {
-        const pred = predictions[match.id];
-        if (pred) {
-          const scoreResult = calculatePredictionPoints(pred, match);
-          if (scoreResult.points > 0) {
-            count++;
-          }
-        }
-      }
-    });
-    return count;
-  }, [predictions, matches]);
-
-  // Dynamic calculated score points for logged in user based on Finished Match Predictions
-  const coinBalance = useMemo(() => {
-    let earnedCoins = 0;
-    matches.forEach((match) => {
-      if (match.status === 'FINISHED') {
-        const pred = predictions[match.id];
-        
-        const scoreResult = calculatePredictionPoints(pred, match);
-        // User guesses correctly if score represents exact outcomes or correct outcome winners
-        if (scoreResult.type === 'exact' || scoreResult.type === 'winner') {
-          earnedCoins += getMatchCoinsValue(match);
-        }
-      }
-    });
-
-    return earnedCoins;
-  }, [predictions, matches]);
-
-  // Synchronize and initialize employee list state
-  useEffect(() => {
-    if (!currentUser) return;
-
-    setEmployees((prev) => {
-      const userObj = {
-        id: 'emp-logged',
-        fullName: currentUser.fullName,
-        department: currentUser.department,
-        site: currentUser.site,
-        points: coinBalance,
-        avatarColor: 'from-[#14665F] to-[#072C23]',
-      };
-
-      if (prev.length > 0) {
-        // Find if user already exists in list and update, otherwise insert
-        const userExists = prev.some(e => e.id === 'emp-logged');
-        if (userExists) {
-          return prev.map(e => e.id === 'emp-logged' ? userObj : e).sort((a, b) => b.points - a.points);
-        } else {
-          return [userObj, ...prev].sort((a, b) => b.points - a.points);
-        }
+    if (authToken) {
+      const ok = await postPrediction(authToken, matchId, scoreA, scoreB, firstGoalTime);
+      if (!ok) {
+        console.warn('[App] Failed to persist prediction for', matchId);
       } else {
-        // Initial setup
-        return [...INITIAL_EMPLOYEES, userObj].sort((a, b) => b.points - a.points);
+        // Refresh user stats after successful prediction
+        fetchCurrentUser(authToken).then((u) => { if (u) setCurrentUser(u); });
       }
-    });
-  }, [currentUser, coinBalance]);
+    }
+  }, [authToken, isPredictionsClosed, forceGlobalLock]);
 
-  // Real-time updates simulation of colleagues' coin standings and live activity logs
-  useEffect(() => {
-    if (employees.length === 0) return;
+  // Server-authoritative stats — refreshed after each prediction save
+  const correctGuessesCount = currentUser?.exactCorrectCount ?? 0;
+  const coinBalance = currentUser?.totalPoints ?? 0;
 
-    const interval = setInterval(() => {
-      const targetList = employees.filter((e) => e.id !== 'emp-logged');
-      if (targetList.length === 0) return;
-
-      const randomEmp = targetList[Math.floor(Math.random() * targetList.length)];
-      const coinsDiff = Math.random() > 0.4 ? 250 : 350;
-
-      const actions = [
-        `predicted the exact score for Spain vs England`,
-        `calculated correct goals difference for USA matchup`,
-        `is leading the standings after final match stats`,
-        `placed prediction stakes for tomorrow's tournament match`,
-      ];
-      const selectedAction = actions[Math.floor(Math.random() * actions.length)];
-
-      setEmployees((prev) => {
-        const updated = prev.map((e) => {
-          if (e.id === randomEmp.id) {
-            return {
-              ...e,
-              points: e.points + coinsDiff,
-            };
-          }
-          return e;
-        });
-        return [...updated].sort((a, b) => b.points - a.points);
-      });
-
-      // Add to activity logs
-      const newLog = {
-        id: String(Date.now()),
-        text: `${randomEmp.fullName} (${randomEmp.department}, ${randomEmp.site}) ${selectedAction} (+${coinsDiff} Coins)`,
-        time: 'Just now',
-      };
-      setActivityLogs((prev) => [newLog, ...prev.slice(0, 4)]);
-    }, 10000);
-
-    return () => clearInterval(interval);
-  }, [employees]);
+  // No local simulation — leaderboard and activity are populated from real API calls
 
   // Dashboard Stats cards calculations
   const statsList = useMemo(() => {
@@ -354,16 +478,34 @@ export default function App() {
   // Check if either natural deadline or admin override locks predictions
   const isCurrentlyLocked = isPredictionsClosed || forceGlobalLock;
 
-  // Render Login screen if not authenticated
+  // ─── Loading splash — prevents flash of login screen ────────────────────────
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#072C23] flex items-center justify-center">
+        <div className="text-center space-y-3">
+          <div className="w-8 h-8 border-4 border-[#14665F] border-t-white rounded-full animate-spin mx-auto" />
+          <p className="text-white/50 text-xs font-bold uppercase tracking-widest">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Login screen — shown when no valid session exists ───────────────────────
   if (!currentUser) {
-    return <LoginScreen onLogin={handleLogin} />;
+    return <LoginScreen authError={authError} />;
   }
 
   return (
     <div className="flex h-screen bg-[#F7F5F2] font-sans text-slate-900 overflow-hidden relative">
       
       {/* Onboarding Welcome / Betting Rules Modal */}
-      {showOnboarding && <Onboarding onComplete={handleOnboardingComplete} />}
+      {showOnboarding && currentUser && (
+        <Onboarding
+          onComplete={handleOnboardingComplete}
+          currentUser={currentUser}
+          authToken={authToken ?? ''}
+        />
+      )}
 
       {/* Slide-out Sidebar for screens (collapsible / toggleable) */}
       <aside 
@@ -468,11 +610,11 @@ export default function App() {
           </div>
 
           {/* User Score Stats bar */}
-          <div className="flex items-center gap-2.5">
-            <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-500/10 rounded-full border border-amber-500/25 select-none text-amber-700">
-              <Coins className="w-4 h-4 text-amber-500 fill-amber-500/20 shrink-0" />
-              <span className="font-mono font-black text-xs">
-                {coinBalance.toLocaleString()}
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-1.5 px-3 py-1 bg-[#14665F]/10 rounded-full border border-[#14665F]/20 select-none">
+              <CheckCircle className="w-4 h-4 text-[#14665F]" />
+              <span className="font-mono font-black text-xs text-[#14665F]">
+                {correctGuessesCount} Wins
               </span>
             </div>
 
@@ -483,9 +625,19 @@ export default function App() {
                   <Star className="w-2.5 h-2.5 text-amber-500 fill-amber-500" /> PRO
                 </span>
               </div>
-              <div className="w-9 h-9 bg-gradient-to-tr from-[#14665F] to-[#072C23] rounded-full flex items-center justify-center text-white font-black text-xs border border-white shrink-0 shadow-sm">
-                {currentUser.fullName.split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase()}
-              </div>
+              {currentUser.avatarUrl ? (
+                <img
+                  src={currentUser.avatarUrl}
+                  alt={currentUser.fullName}
+                  referrerPolicy="no-referrer"
+                  onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                  className="w-9 h-9 rounded-full object-cover border border-white shrink-0 shadow-sm"
+                />
+              ) : (
+                <div className="w-9 h-9 bg-gradient-to-tr from-[#14665F] to-[#072C23] rounded-full flex items-center justify-center text-white font-black text-xs border border-white shrink-0 shadow-sm">
+                  {currentUser.fullName.split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase()}
+                </div>
+              )}
             </div>
           </div>
         </header>
@@ -577,64 +729,46 @@ export default function App() {
                         <div className="grid grid-cols-1 gap-3.5">
                           {matches.slice(0, 4).map((match) => {
                             const selection = predictions[match.id];
-                            const isMatchLocked = isCurrentlyLocked || match.status === 'LIVE' || match.status === 'FINISHED';
                             return (
                               <div 
                                 key={match.id} 
-                                className="p-3.5 sm:p-4 rounded-3xl bg-slate-50 border border-slate-100 flex items-center justify-between gap-3 sm:gap-4 hover:border-slate-200 transition-all"
+                                className="p-4 rounded-2xl bg-slate-50 border border-slate-100 flex items-center justify-between gap-4 hover:border-slate-200 transition-all"
                               >
                                 <div className="truncate flex-1">
-                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block truncate">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
                                     {match.date} • {match.venue}
                                   </span>
-                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1 font-bold text-xs sm:text-sm text-slate-800">
-                                    <span className="inline-flex items-center gap-1 shrink-0">
-                                      <span>{match.flagA}</span>
-                                      <span>{match.teamA}</span>
-                                    </span>
+                                  <div className="flex items-center gap-2 mt-1 font-bold text-sm text-slate-800">
+                                    <span>{match.flagA} {match.teamA}</span>
                                     {match.status === 'FINISHED' || match.status === 'LIVE' ? (
-                                      <span className="bg-slate-200 px-1.5 py-0.5 text-xs text-slate-850 rounded font-mono font-black shrink-0 inline-flex items-center gap-0.5 select-none whitespace-nowrap">
-                                        <span>{match.scoreA}</span>
-                                        <span className="text-slate-400 font-extrabold">:</span>
-                                        <span>{match.scoreB}</span>
+                                      <span className="bg-slate-200 px-1.5 py-0.5 text-xs text-slate-800 rounded font-mono font-black">
+                                        {match.scoreA} : {match.scoreB}
                                       </span>
                                     ) : (
-                                      <span className="text-slate-350 font-black text-xs shrink-0">VS</span>
+                                      <span className="text-slate-300 font-extrabold text-xs">VS</span>
                                     )}
-                                    <span className="inline-flex items-center gap-1 shrink-0">
-                                      <span>{match.flagB}</span>
-                                      <span>{match.teamB}</span>
-                                    </span>
+                                    <span>{match.flagB} {match.teamB}</span>
                                   </div>
                                 </div>
 
-                                <div className="shrink-0">
+                                <div>
                                   {selection ? (
-                                    <div className="text-right flex flex-col items-end gap-1 select-none">
+                                    <div className="text-right">
                                       <span className="bg-emerald-50 text-emerald-700 text-[10px] font-extrabold uppercase px-2 py-1 rounded border border-emerald-100 font-mono">
                                         {selection.predictedScoreA} - {selection.predictedScoreB}
                                       </span>
-                                      {isMatchLocked && (
-                                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest leading-none">
-                                          Locked
-                                        </span>
-                                      )}
                                     </div>
-                                  ) : match.status === 'LIVE' || match.status === 'FINISHED' ? (
-                                    <span className="text-[10px] font-black text-slate-400 bg-slate-100 px-2.5 py-1 rounded-lg uppercase tracking-wider select-none shrink-0">
-                                      Closed
-                                    </span>
                                   ) : (
                                     <button 
                                       onClick={() => setActiveTab('Predictions')}
-                                      disabled={isMatchLocked}
-                                      className={`px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-xl text-xs font-bold uppercase transition-colors select-none cursor-pointer shrink-0 ${
-                                        isMatchLocked
+                                      disabled={isCurrentlyLocked}
+                                      className={`px-3.5 py-2 rounded-xl text-xs font-bold uppercase transition-colors select-none cursor-pointer ${
+                                        isCurrentlyLocked
                                           ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
                                           : 'bg-[#14665F] text-white hover:bg-[#072C23]'
                                       }`}
                                     >
-                                      {isMatchLocked ? 'Locked' : 'Predict'}
+                                      {isCurrentlyLocked ? 'Locked' : 'Predict'}
                                     </button>
                                   )}
                                 </div>
@@ -657,9 +791,9 @@ export default function App() {
                           </div>
                           <button 
                             onClick={() => setActiveTab('Leaderboard')}
-                            className="text-xs font-extrabold text-[#14665F] hover:underline cursor-pointer"
+                            className="text-xs font-extrabold text-[#14665F] hover:underline"
                           >
-                            All Standings &rarr;
+                            All Standings →
                           </button>
                         </div>
 
@@ -702,9 +836,8 @@ export default function App() {
                                 </div>
 
                                 <div className="text-right shrink-0">
-                                  <span className="font-mono font-black text-xs text-[#14665F] flex items-center justify-end gap-0.5 select-none">
-                                    {emp.points.toLocaleString()}
-                                    <Coins className="w-3.5 h-3.5 text-amber-500 fill-amber-500/10 shrink-0" />
+                                  <span className="font-mono font-black text-xs text-[#14665F]">
+                                    {emp.points.toLocaleString()} <span className="text-[9px] text-slate-400 font-normal">pts</span>
                                   </span>
                                   <div className="text-[8px] font-bold text-slate-450 mt-0.5">
                                     {correctGuesses} Correct
@@ -734,11 +867,12 @@ export default function App() {
 
             {/* View 2: PREDICTION INPUT HUB */}
             {activeTab === 'Predictions' && (
-              <MatchPredictor 
+              <MatchPredictor
                 matches={matches}
                 predictions={predictions}
                 onSavePrediction={handleSavePrediction}
                 isClosed={isCurrentlyLocked}
+                authToken={authToken ?? ''}
                 outrights={outrights}
                 onSaveOutrights={setOutrights}
               />

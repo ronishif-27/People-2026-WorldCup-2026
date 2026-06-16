@@ -25,9 +25,9 @@ export function SmartGoalSelector({
 
   return (
     <div className="flex flex-col items-center bg-slate-50 border border-slate-100 p-4 rounded-2xl relative">
-      <div className="flex items-center gap-1.5 mb-2 h-6 px-1 max-w-full justify-center">
-        <span className="text-xl filter drop-shadow-xs leading-none shrink-0">{flag}</span>
-        <span className="text-xs font-black text-slate-700 uppercase tracking-tighter truncate max-w-[110px] sm:max-w-none text-center">
+      <div className="flex items-center gap-1.5 mb-2 h-6">
+        <span className="text-xl filter drop-shadow-xs leading-none">{flag}</span>
+        <span className="text-xs font-black text-slate-700 uppercase tracking-tighter truncate max-w-[90px]">
           {teamName}
         </span>
       </div>

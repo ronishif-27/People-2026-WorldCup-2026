@@ -1,23 +1,48 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Match, Prediction } from '../types';
-import { SmartGoalSelector } from './SmartGoalSelector';
-import { CalendarDays, Save, ShieldAlert, Check, HelpCircle, Flame, Trophy, Award, Coins, Lock } from 'lucide-react';
+import { CalendarDays, Save, ShieldAlert, HelpCircle, Flame, Trophy, Award, ChevronUp, ChevronDown, Pencil } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { getMatchCoinsValue } from '../utils/scoring';
+
+// ─── Label helpers ────────────────────────────────────────────────────────────
+
+/** Removes underscores and title-cases any internal key: GROUP_STAGE → Group Stage */
+function formatLabel(str: string): string {
+  return str
+    .split('_')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
+/** Specific stage display names */
+function formatStage(stage: string): string {
+  const map: Record<string, string> = {
+    GROUP_STAGE:   'Group Stage',
+    ROUND_OF_32:   'Round of 32',
+    ROUND_OF_16:   'Round of 16',
+    QUARTERFINALS: 'Quarter Finals',
+    SEMIFINALS:    'Semi Finals',
+    FINAL:         'Final',
+  };
+  return map[stage] ?? formatLabel(stage);
+}
+
+// ─── Props ────────────────────────────────────────────────────────────────────
 
 interface MatchPredictorProps {
   matches: Match[];
   predictions: Record<string, Prediction>;
   onSavePrediction: (matchId: string, scoreA: number, scoreB: number, firstGoalTime?: string) => void;
-  isClosed: boolean; // True if countdown is past June 10th
+  isClosed: boolean;
+  authToken: string;
   outrights: {
     topScorer: string;
     mostRedCards: string;
     timeFirstGoal: string;
     totalHeadedGoals: number | '';
   };
-  onSaveOutrights: (updatedOutrights: {
+  onSaveOutrights: (o: {
     topScorer: string;
     mostRedCards: string;
     timeFirstGoal: string;
@@ -25,742 +50,429 @@ interface MatchPredictorProps {
   }) => void;
 }
 
+interface ConsensusStats { winA: number; draw: number; winB: number; }
+
+const API_URL = import.meta.env.VITE_API_URL ?? '';
+
+// ─── Spinner-style score selector ─────────────────────────────────────────────
+
+function ScoreSpinner({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  return (
+    <div className="flex flex-col items-center gap-0.5">
+      <button
+        type="button"
+        onClick={() => onChange(Math.min(value + 1, 20))}
+        className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-100 hover:bg-[#14665F]/10 text-slate-600 hover:text-[#14665F] transition-colors cursor-pointer"
+      >
+        <ChevronUp className="w-4 h-4 stroke-[3]" />
+      </button>
+      <span className="text-3xl font-black font-mono text-slate-900 w-10 text-center leading-none py-1">
+        {value}
+      </span>
+      <button
+        type="button"
+        onClick={() => onChange(Math.max(value - 1, 0))}
+        className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-100 hover:bg-[#14665F]/10 text-slate-600 hover:text-[#14665F] transition-colors cursor-pointer"
+      >
+        <ChevronDown className="w-4 h-4 stroke-[3]" />
+      </button>
+    </div>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+
 export default function MatchPredictor({
   matches,
   predictions,
   onSavePrediction,
   isClosed,
+  authToken,
   outrights,
   onSaveOutrights,
 }: MatchPredictorProps) {
-  // Local outrights state
   const [localOutrights, setLocalOutrights] = useState(outrights);
+  useEffect(() => { setLocalOutrights(outrights); }, [outrights]);
+
+  // ── Real consensus data from API ──────────────────────────────────────────
+  const [consensusMap, setConsensusMap] = useState<Record<string, ConsensusStats>>({});
 
   useEffect(() => {
-    setLocalOutrights(outrights);
-  }, [outrights]);
-
-  const handleLocalOutrightChange = (field: string, value: any) => {
-    setLocalOutrights(prev => ({
-      ...prev,
-      [field]: value
-    }));
-  };
-
-  const saveTopScorer = () => {
-    onSaveOutrights({ ...outrights, topScorer: localOutrights.topScorer });
-    confetti({
-      particleCount: 30,
-      spread: 40,
-      origin: { y: 0.8 }
+    const upcoming = matches.filter(m => m.status === 'UPCOMING' || m.status === 'LIVE');
+    upcoming.forEach(async (m) => {
+      try {
+        const res = await fetch(`${API_URL}/api/predictions/${m.id}/consensus`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        // Backend returns { winA, draw, winB } as percentages
+        setConsensusMap(prev => ({
+          ...prev,
+          [m.id]: {
+            winA: data.winA ?? data.winAPercent ?? 33,
+            draw: data.draw ?? data.drawPercent ?? 34,
+            winB: data.winB ?? data.winBPercent ?? 33,
+          },
+        }));
+      } catch { /* ignore */ }
     });
-    setToastMessage("Top Scorer prediction saved successfully!");
-    setTimeout(() => setToastMessage(null), 3500);
-  };
-
-  const saveRedCards = () => {
-    onSaveOutrights({ ...outrights, mostRedCards: localOutrights.mostRedCards });
-    confetti({
-      particleCount: 30,
-      spread: 40,
-      origin: { y: 0.8 }
-    });
-    setToastMessage("Most Red Cards prediction saved successfully!");
-    setTimeout(() => setToastMessage(null), 3500);
-  };
-
-  const saveHeadedGoals = () => {
-    onSaveOutrights({ ...outrights, totalHeadedGoals: localOutrights.totalHeadedGoals });
-    confetti({
-      particleCount: 30,
-      spread: 40,
-      origin: { y: 0.8 }
-    });
-    setToastMessage("Total Headed Goals prediction saved successfully!");
-    setTimeout(() => setToastMessage(null), 3500);
-  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matches, authToken]);
 
   const [editingMatchId, setEditingMatchId] = useState<string | null>(null);
-  
-  // Local score states for editing
-  const [localScoreA, setLocalScoreA] = useState<number>(0);
-  const [localScoreB, setLocalScoreB] = useState<number>(0);
-  const [localFirstGoalTime, setLocalFirstGoalTime] = useState<string>('');
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [localScoreA, setLocalScoreA]       = useState(0);
+  const [localScoreB, setLocalScoreB]       = useState(0);
+  const [localFirstGoal, setLocalFirstGoal] = useState('');
+  const [toastMessage, setToastMessage]     = useState<string | null>(null);
 
   const startEditing = (match: Match) => {
-    if (isClosed || match.status === 'LIVE' || match.status === 'FINISHED') return;
+    if (isClosed) return;
     const existing = predictions[match.id];
     setEditingMatchId(match.id);
-    setLocalScoreA(existing ? existing.predictedScoreA : 0);
-    setLocalScoreB(existing ? existing.predictedScoreB : 0);
-    setLocalFirstGoalTime(existing?.firstGoalTime || '');
+    setLocalScoreA(existing?.predictedScoreA ?? 0);
+    setLocalScoreB(existing?.predictedScoreB ?? 0);
+    setLocalFirstGoal(existing?.firstGoalTime ?? '');
   };
 
   const saveLocalPrediction = (matchId: string, teamA: string, teamB: string) => {
-    onSavePrediction(matchId, localScoreA, localScoreB, localFirstGoalTime);
+    onSavePrediction(matchId, localScoreA, localScoreB, localFirstGoal);
     setEditingMatchId(null);
-    
-    // Play confetti explosion!
-    confetti({
-      particleCount: 50,
-      spread: 60,
-      origin: { y: 0.8 }
-    });
-
-    setToastMessage(`Prediction of ${localScoreA}-${localScoreB} for ${teamA} vs ${teamB} is saved!`);
-    setTimeout(() => {
-      setToastMessage(null);
-    }, 4000);
+    confetti({ particleCount: 50, spread: 60, origin: { y: 0.8 } });
+    setToastMessage(`Prediction saved: ${teamA} ${localScoreA} – ${localScoreB} ${teamB}`);
+    setTimeout(() => setToastMessage(null), 4000);
   };
 
-  // Helper to filter matches according to selected stages
-  const getSubmatches = () => {
-    return matches.filter((m) => m.status === 'UPCOMING' || m.status === 'LIVE' || m.status === 'FINISHED');
+  const saveOutrightsAction = () => {
+    onSaveOutrights(localOutrights);
+    confetti({ particleCount: 50, spread: 60, origin: { y: 0.8 } });
+    setToastMessage('Tournament outright predictions saved!');
+    setTimeout(() => setToastMessage(null), 4000);
   };
 
-  // Helper to calculate mock/deterministic other users' predictions stats ("Most predicted winner")
-  const getConsensusStats = (matchId: string) => {
-    // If no one yet submitted (let's simulate m3 and m5 as unsubmitted)
-    if (matchId === 'm3' || matchId === 'm5') {
-      return {
-        winA: 0,
-        draw: 0,
-        winB: 0,
-        total: 0
-      };
-    }
-    
-    const charCodeSum = matchId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-    const winAPercent = 40 + (charCodeSum % 25);
-    const drawPercent = 10 + (charCodeSum % 15);
-    const winBPercent = 100 - winAPercent - drawPercent;
-    
-    return {
-      winA: winAPercent,
-      draw: drawPercent,
-      winB: winBPercent,
-      total: 100
-    };
-  };
-
-  const visibleMatches = getSubmatches();
+  const visibleMatches = matches.filter(
+    (m) => m.status === 'UPCOMING' || m.status === 'LIVE'
+  );
 
   return (
     <div className="space-y-6">
-      {/* Informative Header card */}
-      <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-sm relative">
+
+      {/* ── Header ──────────────────────────────────────────────────────────── */}
+      <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-sm">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <span className="text-xs font-bold text-[#14665F] bg-[#14665F]/10 px-2.5 py-1 rounded-full uppercase tracking-wider animate-pulse">
               Active Predictions Portal
             </span>
-            <h3 className="text-2xl font-black text-slate-800 mt-2 tracking-tight">FIFA Group Stage Prediction</h3>
+            <h3 className="text-2xl font-black text-slate-800 mt-2 tracking-tight">
+              FIFA World Cup 2026 — Predictions
+            </h3>
             <p className="text-slate-500 text-xs font-medium">
-              Submit your prediction score tallies for upcoming World Cup matches before kickoff lockouts!
+              Submit your score forecast for each match before kickoff.
             </p>
           </div>
           {isClosed && (
-            <div className="flex items-center gap-2 px-4 py-2 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm font-bold shrink-0 shadow-sm">
+            <div className="flex items-center gap-2 px-4 py-2 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm font-bold shrink-0">
               <ShieldAlert className="w-5 h-5" />
-              Pre-Tournament Predictions are Closed!
+              Predictions are Closed
             </div>
           )}
         </div>
       </div>
 
-      {/* Toast Alert popup banner */}
+      {/* ── Toast ───────────────────────────────────────────────────────────── */}
       <AnimatePresence>
         {toastMessage && (
           <motion.div
-            initial={{ opacity: 0, y: -20, scale: 0.95 }}
+            initial={{ opacity: 0, y: -16, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -20, scale: 0.95 }}
-            className="p-4 bg-emerald-500 text-white rounded-2xl flex items-center gap-3 text-xs font-bold leading-none shadow-lg shadow-emerald-500/20"
+            exit={{ opacity: 0, y: -16 }}
+            className="p-4 bg-emerald-500 text-white rounded-2xl flex items-center gap-3 text-xs font-bold shadow-lg shadow-emerald-500/20"
           >
-            <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center font-bold text-center">✓</div>
+            <span className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center">✓</span>
             <span>{toastMessage}</span>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* World Cup 2026 Outright Tournament Predictions */}
+      {/* ── Outright specials ───────────────────────────────────────────────── */}
       <div className="py-2 space-y-4">
         <div className="border-b border-slate-150 pb-2">
           <span className="text-[10px] font-black text-slate-400 bg-slate-100 px-2 py-0.5 rounded uppercase tracking-wider">
             Bonus Specials (Optional)
           </span>
-          <h3 className="text-base font-black text-slate-705 mt-1">World Cup 2026 Outright Predictions</h3>
-          <p className="text-slate-500 text-[11px] font-normal">Predict the ultimate stats across the entire tournament</p>
+          <h3 className="text-base font-black text-slate-700 mt-1">World Cup 2026 Outright Predictions</h3>
+          <p className="text-slate-500 text-[11px]">Predict the ultimate stats across the entire tournament</p>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 py-1">
-          {/* Top Scorer Circle */}
-          <div className="flex flex-col items-center justify-between text-center space-y-2.5 bg-slate-50 border border-slate-250 p-3.5 rounded-2xl min-h-[160px] sm:min-h-[175px]">
-            <div className="flex items-center gap-3 sm:flex-col sm:items-center sm:gap-1.5 w-full">
-              <div className="w-11 h-11 rounded-full bg-amber-500/10 border-2 border-amber-500/60 flex items-center justify-center text-amber-600 shadow-xs relative shrink-0">
-                <Trophy className="w-5 h-5" />
-                <span className="absolute -top-1.5 -right-1 bg-amber-500 text-white text-[7px] font-black px-1.5 py-0.2 rounded-full uppercase">Boot</span>
-              </div>
-              <div className="text-left sm:text-center flex-1 sm:max-w-[150px]">
-                <h4 className="font-extrabold text-slate-800 text-xs line-clamp-1">Top Scorer</h4>
-                <p className="text-[10px] text-slate-400">Most goals in active games</p>
-              </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 py-2">
+          {/* Top Scorer */}
+          <div className="flex flex-col items-center text-center space-y-2.5">
+            <div className="w-16 h-16 rounded-full bg-amber-500/10 border-2 border-amber-500 flex items-center justify-center text-amber-600 relative">
+              <Trophy className="w-7 h-7" />
+              <span className="absolute -top-1.5 -right-1 bg-amber-500 text-white text-[8px] font-black px-1.5 py-0.5 rounded-full">Boot</span>
             </div>
-            <div className="w-full flex flex-col items-center gap-1.5">
-              <input
-                type="text"
-                placeholder="e.g. Kylian Mbappé..."
-                value={localOutrights.topScorer || ''}
-                onChange={(e) => handleLocalOutrightChange('topScorer', e.target.value)}
-                disabled={isClosed}
-                className="w-full max-w-[160px] text-center px-3 py-1 bg-white border border-slate-200 rounded-full text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-[#14665F]"
-              />
-              {!isClosed && localOutrights.topScorer !== outrights.topScorer && (
-                <motion.button
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  onClick={saveTopScorer}
-                  className="flex items-center gap-1 px-2.5 py-0.5 bg-[#14665F] text-white hover:bg-[#072C23] hover:shadow-sm rounded-full text-[8.5px] font-black tracking-wider uppercase cursor-pointer"
-                >
-                  <Save className="w-2.5 h-2.5" /> Save Selection
-                </motion.button>
-              )}
+            <div>
+              <h4 className="font-extrabold text-slate-800 text-xs">Top Scorer (Golden Boot)</h4>
+              <p className="text-[10px] text-slate-400">Most goals in the tournament</p>
             </div>
+            <input
+              type="text"
+              placeholder="e.g. Kylian Mbappé…"
+              value={localOutrights.topScorer || ''}
+              onChange={(e) => setLocalOutrights((p) => ({ ...p, topScorer: e.target.value }))}
+              disabled={isClosed}
+              className="w-full max-w-[170px] text-center px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-full text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-[#14665F]"
+            />
           </div>
 
-          {/* Team with Most Red Cards Circle */}
-          <div className="flex flex-col items-center justify-between text-center space-y-2.5 bg-slate-50 border border-slate-250 p-3.5 rounded-2xl min-h-[160px] sm:min-h-[175px]">
-            <div className="flex items-center gap-3 sm:flex-col sm:items-center sm:gap-1.5 w-full">
-              <div className="w-11 h-11 rounded-full bg-red-500/10 border-2 border-red-500/60 flex items-center justify-center text-red-650 shadow-xs relative shrink-0">
-                <ShieldAlert className="w-5 h-5" />
-                <span className="absolute -top-1.5 -right-1 bg-red-500 text-white text-[7px] font-black px-1.5 py-0.2 rounded-full uppercase">Cards</span>
-              </div>
-              <div className="text-left sm:text-center flex-1 sm:max-w-[150px]">
-                <h4 className="font-extrabold text-slate-850 text-xs line-clamp-1">Most Red Cards</h4>
-                <p className="text-[10px] text-slate-400">Prone country dismissals</p>
-              </div>
+          {/* Most Red Cards */}
+          <div className="flex flex-col items-center text-center space-y-2.5">
+            <div className="w-16 h-16 rounded-full bg-red-500/10 border-2 border-red-500 flex items-center justify-center text-red-600 relative">
+              <ShieldAlert className="w-7 h-7" />
+              <span className="absolute -top-1.5 -right-1 bg-red-500 text-white text-[8px] font-black px-1.5 py-0.5 rounded-full">Cards</span>
             </div>
-            <div className="w-full flex flex-col items-center gap-1.5">
-              <input
-                type="text"
-                placeholder="e.g. Uruguay..."
-                value={localOutrights.mostRedCards || ''}
-                onChange={(e) => handleLocalOutrightChange('mostRedCards', e.target.value)}
-                disabled={isClosed}
-                className="w-full max-w-[160px] text-center px-3 py-1 bg-white border border-slate-200 rounded-full text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-[#14665F]"
-              />
-              {!isClosed && localOutrights.mostRedCards !== outrights.mostRedCards && (
-                <motion.button
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  onClick={saveRedCards}
-                  className="flex items-center gap-1 px-2.5 py-0.5 bg-[#14665F] text-white hover:bg-[#072C23] hover:shadow-sm rounded-full text-[8.5px] font-black tracking-wider uppercase cursor-pointer"
-                >
-                  <Save className="w-2.5 h-2.5" /> Save Selection
-                </motion.button>
-              )}
+            <div>
+              <h4 className="font-extrabold text-slate-800 text-xs">Most Red Cards</h4>
+              <p className="text-[10px] text-slate-400">Most dismissals by country</p>
             </div>
+            <input
+              type="text"
+              placeholder="e.g. Uruguay…"
+              value={localOutrights.mostRedCards || ''}
+              onChange={(e) => setLocalOutrights((p) => ({ ...p, mostRedCards: e.target.value }))}
+              disabled={isClosed}
+              className="w-full max-w-[170px] text-center px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-full text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-[#14665F]"
+            />
           </div>
 
-          {/* Total Headed Goals Circle */}
-          <div className="flex flex-col items-center justify-between text-center space-y-2.5 bg-slate-50 border border-slate-250 p-3.5 rounded-2xl min-h-[160px] sm:min-h-[175px]">
-            <div className="flex items-center gap-3 sm:flex-col sm:items-center sm:gap-1.5 w-full">
-              <div className="w-11 h-11 rounded-full bg-indigo-500/10 border-2 border-indigo-500/60 flex items-center justify-center text-indigo-650 shadow-xs relative shrink-0">
-                <Award className="w-5 h-5" />
-                <span className="absolute -top-1.5 -right-1 bg-indigo-500 text-white text-[7px] font-black px-1.5 py-0.2 rounded-full uppercase">Heads</span>
-              </div>
-              <div className="text-left sm:text-center flex-1 sm:max-w-[150px]">
-                <h4 className="font-extrabold text-slate-850 text-xs line-clamp-1">Headed Goals</h4>
-                <p className="text-[10px] text-slate-400">Header goals count</p>
-              </div>
+          {/* Total Headed Goals */}
+          <div className="flex flex-col items-center text-center space-y-2.5">
+            <div className="w-16 h-16 rounded-full bg-indigo-500/10 border-2 border-indigo-500 flex items-center justify-center text-indigo-600 relative">
+              <Award className="w-7 h-7" />
+              <span className="absolute -top-1.5 -right-1 bg-indigo-500 text-white text-[8px] font-black px-1.5 py-0.5 rounded-full">Heads</span>
             </div>
-            <div className="w-full flex flex-col items-center gap-1.5">
-              <div className="flex items-center justify-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (isClosed) return;
-                    const val = Number(localOutrights.totalHeadedGoals || 0);
-                    handleLocalOutrightChange('totalHeadedGoals', Math.max(0, val - 1));
-                  }}
-                  disabled={isClosed}
-                  className="w-6 h-6 flex items-center justify-center bg-white hover:bg-slate-100 text-slate-600 font-extrabold rounded-full cursor-pointer transition-all border border-slate-200 text-xs"
-                >
-                  -
-                </button>
-                <input
-                  type="number"
-                  value={localOutrights.totalHeadedGoals === 0 ? 0 : localOutrights.totalHeadedGoals || ''}
-                  onChange={(e) => {
-                    const val = e.target.value === '' ? '' : parseInt(e.target.value, 10);
-                    handleLocalOutrightChange('totalHeadedGoals', val);
-                  }}
-                  disabled={isClosed}
-                  placeholder="0"
-                  className="w-10 py-0.5 bg-white border border-slate-200 text-center text-xs font-mono font-black rounded-full focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (isClosed) return;
-                    const val = Number(localOutrights.totalHeadedGoals || 0);
-                    handleLocalOutrightChange('totalHeadedGoals', val + 1);
-                  }}
-                  disabled={isClosed}
-                  className="w-6 h-6 flex items-center justify-center bg-white hover:bg-slate-100 text-slate-600 font-extrabold rounded-full cursor-pointer transition-all border border-slate-200 text-xs"
-                >
-                  +
-                </button>
-              </div>
-              {!isClosed && localOutrights.totalHeadedGoals !== outrights.totalHeadedGoals && (
-                <motion.button
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  onClick={saveHeadedGoals}
-                  className="flex items-center gap-1 px-2.5 py-0.5 bg-[#14665F] text-white hover:bg-[#072C23] hover:shadow-sm rounded-full text-[8.5px] font-black tracking-wider uppercase cursor-pointer"
-                >
-                  <Save className="w-2.5 h-2.5" /> Save Selection
-                </motion.button>
-              )}
+            <div>
+              <h4 className="font-extrabold text-slate-800 text-xs">Total Headed Goals</h4>
+              <p className="text-[10px] text-slate-400">Header goals across all matches</p>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <button type="button" onClick={() => !isClosed && setLocalOutrights((p) => ({ ...p, totalHeadedGoals: Math.max(0, Number(p.totalHeadedGoals || 0) - 1) }))}
+                className="w-7 h-7 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-600 font-extrabold rounded-full border border-slate-200 cursor-pointer">−</button>
+              <span className="w-10 text-center text-sm font-mono font-black">{localOutrights.totalHeadedGoals || 0}</span>
+              <button type="button" onClick={() => !isClosed && setLocalOutrights((p) => ({ ...p, totalHeadedGoals: Number(p.totalHeadedGoals || 0) + 1 }))}
+                className="w-7 h-7 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-600 font-extrabold rounded-full border border-slate-200 cursor-pointer">+</button>
             </div>
           </div>
         </div>
+
+        {!isClosed && (
+          <div className="flex justify-center pt-2">
+            <button onClick={saveOutrightsAction}
+              className="flex items-center gap-1.5 px-6 py-2 bg-[#14665F] text-white hover:bg-[#072C23] rounded-full text-xs font-extrabold cursor-pointer transition-colors">
+              <Save className="w-3.5 h-3.5" /> Save Special Predictions
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Match cards */}
-      <div className="grid grid-cols-1 gap-6">
+      {/* ── Match cards ─────────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 gap-5">
         {visibleMatches.length === 0 ? (
-          <div className="bg-white rounded-3xl p-12 text-center border text-slate-400 font-bold max-w-lg mx-auto w-full">
+          <div className="bg-white rounded-3xl p-12 text-center border text-slate-400 font-bold">
             <HelpCircle className="w-10 h-10 mx-auto mb-2 text-slate-300" />
-            <p className="text-sm">No matches match this stage filter right now.</p>
-            <p className="text-xs font-medium text-slate-400 mt-1">Check back soon or create matches in the Admin tab configuration!</p>
+            <p className="text-sm">No upcoming matches right now.</p>
+            <p className="text-xs font-medium text-slate-400 mt-1">Check back closer to tournament start or add matches in the Admin tab.</p>
           </div>
         ) : (
           visibleMatches.map((match, idx) => {
             const currentPred = predictions[match.id];
-            const isEditing = editingMatchId === match.id;
-
-            // BDP - Game not yet scheduled state
-            const isNotScheduled = !match.date || match.date === '' || match.date.toLowerCase().includes('tbd') || match.teamA.toLowerCase().includes('tbd') || match.teamA.toLowerCase().includes('winner') || match.teamB.toLowerCase().includes('winner');
-
-            if (isNotScheduled) {
-              return (
-                <div 
-                  key={match.id || `not-sched-${idx}`}
-                  className="bg-slate-50/75 border border-dashed border-slate-250 rounded-3xl p-6 text-center select-none space-y-2.5 transition-all duration-300"
-                >
-                  <div className="mx-auto w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-[#14665F]">
-                    <CalendarDays className="w-5 h-5" />
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-xs font-black text-slate-500 uppercase tracking-widest">BDP - Matchup To Be Scheduled</p>
-                    <p className="text-[11px] text-slate-400 font-medium">This card is a standby placeholder. When teams qualify or dates are finalized, predictions will immediately unlock for all users.</p>
-                  </div>
-                </div>
-              );
-            }
-
-            // Compute consensus percentage indices for this match
-            const stats = getConsensusStats(match.id);
-
-            // True if game started already (Live or Finished)
-            const isGameStarted = match.status === 'LIVE' || match.status === 'FINISHED';
+            const isEditing   = editingMatchId === match.id;
+            const stats       = consensusMap[match.id] ?? { winA: 33, draw: 33, winB: 34 };
+            const coins       = getMatchCoinsValue(match);
 
             return (
               <motion.div
-                initial={{ opacity: 0, y: 15 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: idx * 0.05 }}
                 key={match.id}
-                className="bg-white border border-slate-200 shadow-sm hover:shadow-md rounded-3xl overflow-hidden transition-all duration-300"
-                id={`match-item-${match.id}`}
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: idx * 0.04 }}
+                className="bg-white border border-slate-200 shadow-sm hover:shadow-md rounded-3xl overflow-hidden transition-shadow"
               >
-                {/* INLINE DATE & VENUE COMPLIANT HEADER BAND */}
-                <div className="bg-slate-50/95 px-3.5 py-1.5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2.5 text-[10px] font-bold text-slate-500">
-                  <span className="inline-flex items-center gap-1.5 uppercase tracking-wide">
-                    <CalendarDays className="w-3.5 h-3.5 text-[#14665F]/80 shrink-0" />
-                    <span>{match.date} • {match.time} • <span className="text-slate-400 font-normal">{match.venue}, {match.city}</span></span>
+                {/* ── Row 1: Stage + Points ─────────────────────────────── */}
+                <div className="bg-slate-50 px-5 py-2 border-b border-slate-100 flex items-center justify-between">
+                  <span className="text-[10px] font-black text-[#14665F] uppercase tracking-wider">
+                    {formatStage(match.stage)}
                   </span>
-                  
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-[9px] font-black uppercase text-[#14665F] tracking-wider bg-[#14665F]/10 px-2 py-0.5 rounded">
-                      {match.stage || 'Group Stage'}
-                    </span>
+                  <div className="flex items-center gap-2">
                     {match.status === 'LIVE' && (
-                      <span className="flex items-center gap-1 text-[9px] font-black uppercase text-red-500 animate-pulse bg-red-100/50 px-2 py-0.5 rounded">
-                        <span className="w-1.5 h-1.5 rounded-full bg-red-500"></span> Live Game {match.minute ? `• ${match.minute}` : ''}
+                      <span className="flex items-center gap-1 text-[9px] font-black text-red-500 uppercase animate-pulse">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-500 inline-block" />
+                        Live {match.minute ? `· ${match.minute}` : ''}
                       </span>
                     )}
-                    <span className="bg-amber-500/10 text-amber-700 text-[10px] font-black uppercase px-2 py-0.5 rounded flex items-center gap-0.5 select-none font-mono">
-                      {getMatchCoinsValue(match)}
-                      <Coins className="w-3.5 h-3.5 text-amber-500 fill-amber-500/20" />
+                    <span className="bg-yellow-400/10 text-yellow-700 text-[10px] font-black px-2 py-0.5 rounded-md select-none">
+                      {coins} 🪙
                     </span>
                   </div>
                 </div>
 
-                <div className="flex flex-col md:flex-row">
-                  {/* Left Column: Team matchup details */}
-                  <div className="p-6 md:w-5/12 bg-slate-50/30 flex flex-col justify-center border-b md:border-b-0 md:border-r border-slate-100">
-                    {/* STATE 1: Upcoming and NOT predicted yet -> NO PLACEHOLDER SCORES, just plain Team VS Team matchup */}
-                    {!currentPred && !isGameStarted ? (
-                      <div className="flex flex-col items-center justify-center space-y-3 py-3">
-                        <div className="flex items-center justify-center gap-4 py-2">
-                          {/* Team A */}
-                          <div className="flex flex-col items-center text-center w-[90px]">
-                            <span className="text-4xl mb-1.5 filter drop-shadow-sm select-none">{match.flagA}</span>
-                            <span className="text-xs font-black text-slate-800 truncate w-full">{match.teamA}</span>
-                          </div>
+                {/* ── Row 2: Date · Group ───────────────────────────────── */}
+                <div className="px-5 pt-4 pb-0 flex items-center gap-1.5 text-[11px] font-bold text-slate-400 uppercase tracking-widest">
+                  <CalendarDays className="w-3.5 h-3.5 shrink-0" />
+                  <span>{match.date}</span>
+                  {match.venue && (
+                    <>
+                      <span className="text-slate-300">·</span>
+                      <span>{match.venue}</span>
+                    </>
+                  )}
+                </div>
 
-                          <span className="text-xs font-black text-slate-400/90 tracking-widest px-2.5 py-1 bg-slate-100 border border-slate-205 rounded-full uppercase scale-95 select-none">VS</span>
+                {/* ── Row 3: Teams + Score ──────────────────────────────── */}
+                <div className="px-5 py-5">
+                  <div className="flex items-center justify-between gap-4">
 
-                          {/* Team B */}
-                          <div className="flex flex-col items-center text-center w-[90px]">
-                            <span className="text-4xl mb-1.5 filter drop-shadow-sm select-none">{match.flagB}</span>
-                            <span className="text-xs font-black text-slate-800 truncate w-full">{match.teamB}</span>
-                          </div>
+                    {/* Team A */}
+                    <div className="flex-1 flex flex-col items-center text-center min-w-0">
+                      <span className="text-5xl leading-none">{match.flagA}</span>
+                      <span className="text-sm font-extrabold text-slate-800 mt-2 truncate w-full px-1">{match.teamA}</span>
+                    </div>
+
+                    {/* Score / editor */}
+                    <div className="flex flex-col items-center gap-1 shrink-0">
+                      {isEditing ? (
+                        /* ── Editing: spinners inline ── */
+                        <div className="flex items-center gap-3">
+                          <ScoreSpinner value={localScoreA} onChange={setLocalScoreA} />
+                          <span className="text-2xl font-black text-slate-300">:</span>
+                          <ScoreSpinner value={localScoreB} onChange={setLocalScoreB} />
                         </div>
-                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Group Tally Matchup</p>
-                      </div>
-                    ) : (
-                      // Otherwise show actual game score or live state
-                      <div className="flex flex-col items-center justify-center space-y-3 py-3">
-                        <div className="flex items-center justify-between gap-4 py-2 w-full max-w-[260px] mx-auto">
-                          {/* Team A */}
-                          <div className="flex flex-col items-center text-center w-[90px]">
-                            <span className="text-4xl mb-1.5 filter drop-shadow-sm select-none">{match.flagA}</span>
-                            <span className="text-xs font-black text-slate-800 truncate w-full">{match.teamA}</span>
-                          </div>
-
-                          {/* Real Match Score if Started */}
-                          <div className="flex flex-col items-center justify-center min-w-[70px]">
-                            {isGameStarted ? (
-                              <span className="font-mono text-xl font-black text-slate-850 px-3 py-1 bg-slate-200/50 rounded-xl tracking-tight border border-slate-200 select-none whitespace-nowrap inline-flex items-center justify-center gap-1">
-                                <span>{match.scoreA ?? 0}</span>
-                                <span className="text-slate-405 font-extrabold">:</span>
-                                <span>{match.scoreB ?? 0}</span>
-                              </span>
-                            ) : (
-                              <span className="text-xs bg-slate-200 text-slate-500 font-black px-2.5 py-0.5 rounded-full uppercase tracking-widest select-none">
-                                VS
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Team B */}
-                          <div className="flex flex-col items-center text-center w-[90px]">
-                            <span className="text-4xl mb-1 filter drop-shadow-sm select-none">{match.flagB}</span>
-                            <span className="text-xs font-black text-slate-800 truncate w-full">{match.teamB}</span>
-                          </div>
-                        </div>
-                        {isGameStarted && (
-                          <span className="text-[10px] font-extrabold text-[#14665F] uppercase tracking-wider block">Official Result</span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Right Column: Dynamic Interactive Prediction Block */}
-                  <div className="flex-1 p-6 flex flex-col justify-center bg-white min-h-[190px] space-y-4">
-                    {!isEditing ? (
-                      <div className="text-center md:text-left space-y-4">
-                        
-                        {/* STATE 1: Available & open, NOT yet predicted */}
-                        {!currentPred && !isGameStarted && (
-                          <div className="space-y-3">
-                            <div>
-                              <h4 className="text-sm font-black text-[#14665F] uppercase tracking-wider mb-1">
-                                Predict the Score
-                              </h4>
-                              <p className="text-xs text-slate-400 font-semibold leading-tight">
-                                Cast your forecast below on the correct final score and exact first goal time bracket!
-                              </p>
-                            </div>
-
-                            {/* Guesty Consensus (with 0% same-color support if empty submissions) */}
-                            <div className="space-y-1.5 border-t pt-2.5">
-                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-left">
-                                Guesty Consensus Forecast Stats
-                              </p>
-                              {stats.total === 0 ? (
-                                <div className="space-y-1">
-                                  <div className="flex h-3 px-3 rounded-full overflow-hidden bg-slate-100 text-[8px] font-black text-slate-400 text-center items-center justify-center border border-slate-150">
-                                    No submissions yet • Cast yours now!
-                                  </div>
-                                  <div className="flex justify-between text-[8px] font-bold text-slate-450 uppercase mt-0.5">
-                                    <span className="text-slate-400">0% {match.teamA} Win</span>
-                                    <span className="text-slate-400">0% Draw</span>
-                                    <span className="text-slate-400">0% {match.teamB} Win</span>
-                                  </div>
-                                </div>
-                              ) : (
-                                <div className="space-y-1">
-                                  <div className="flex h-3 rounded-full overflow-hidden bg-slate-100 text-[8px] font-bold text-white text-center">
-                                    <div 
-                                      className="bg-[#14665F] flex items-center justify-center transition-all duration-300" 
-                                      style={{ width: `${stats.winA}%` }} 
-                                    >
-                                      {stats.winA}%
-                                    </div>
-                                    <div 
-                                      className="bg-slate-400 flex items-center justify-center transition-all duration-300" 
-                                      style={{ width: `${stats.draw}%` }} 
-                                    >
-                                      {stats.draw}%
-                                    </div>
-                                    <div 
-                                      className="bg-[#072C23] flex items-center justify-center transition-all duration-300" 
-                                      style={{ width: `${stats.winB}%` }} 
-                                    >
-                                      {stats.winB}%
-                                    </div>
-                                  </div>
-                                  <div className="flex justify-between text-[8px] font-bold text-slate-400 uppercase tracking-wider">
-                                    <span>{match.teamA} Win ({stats.winA}%)</span>
-                                    <span>Draw ({stats.draw}%)</span>
-                                    <span>{match.teamB} Win ({stats.winB}%)</span>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-
-                            <button
-                              onClick={() => startEditing(match)}
-                              disabled={isClosed}
-                              className="w-full md:w-auto px-5 py-2.5 bg-[#14665F] text-white hover:bg-[#072C23] font-black text-xs uppercase tracking-widest rounded-xl transition-all duration-200 select-none shadow-sm cursor-pointer"
-                            >
-                              Predict Score
-                            </button>
-                          </div>
-                        )}
-
-                        {/* STATE 2: Open and user HAS predicted */}
-                        {currentPred && !isGameStarted && (
-                          <div className="space-y-4">
-                            <div className="flex items-center justify-between gap-4">
-                              <div>
-                                <h4 className="text-xs font-black text-[#14665F] uppercase tracking-wider">
-                                  Your Saved Prediction
-                                </h4>
-                              </div>
-                              <span className="bg-emerald-50 text-emerald-700 text-[10px] font-black uppercase px-2 py-0.5 rounded border border-emerald-150 flex items-center gap-0.5 shrink-0 select-none">
-                                <Check className="w-3.5 h-3.5" /> Saved
-                              </span>
-                            </div>
-
-                            {/* Prediction Display Box */}
-                            <div className="p-4 bg-emerald-50/20 rounded-2xl border border-emerald-100 flex flex-col items-center justify-center text-center space-y-2">
-                              {/* Predicted Score Between Groups */}
-                              <div className="font-extrabold text-slate-900 flex items-center justify-center gap-3">
-                                <span className="text-xs font-black text-slate-500 uppercase">{match.teamA}</span>
-                                <span className="bg-[#14665F] text-white px-3 py-1 rounded-xl font-mono text-xl tracking-wide shadow-md">
-                                  {currentPred.predictedScoreA}
-                                </span>
-                                <span className="text-slate-350 font-black">-</span>
-                                <span className="bg-[#14665F] text-white px-3 py-1 rounded-xl font-mono text-xl tracking-wide shadow-md">
-                                  {currentPred.predictedScoreB}
-                                </span>
-                                <span className="text-xs font-black text-slate-500 uppercase">{match.teamB}</span>
-                              </div>
-
-                              {/* Time of first goal */}
-                              {currentPred.firstGoalTime && (
-                                <p className="text-[11px] font-black text-slate-600 flex items-center justify-center gap-1 bg-slate-100 px-3 py-1 rounded-xl border border-slate-200 mt-1">
-                                  <Flame className="w-3.5 h-3.5 text-orange-500 fill-orange-500/10" /> Goal Time Bracket: <span className="text-[#14665F]">{currentPred.firstGoalTime}</span>
-                                </p>
-                              )}
-
-                              <div className="text-[10.5px] font-extrabold text-amber-600 flex items-center justify-center gap-1 select-none pt-1">
-                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
-                                Change this prediction at any point before kickoff.
-                              </div>
-                            </div>
-
-                            {/* Guesty Consensus in State 2 */}
-                            <div className="space-y-1 border-t pt-3">
-                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-left">
-                                Guesty Consensus Forecast Stats
-                              </p>
-                              {stats.total === 0 ? (
-                                <div className="flex h-3 px-3 rounded-full overflow-hidden bg-slate-100 text-[8px] font-black text-slate-400 text-center items-center justify-center border border-slate-150">
-                                  No submissions yet • Cast yours now!
-                                </div>
-                              ) : (
-                                <div className="space-y-1">
-                                  <div className="flex h-3 rounded-full overflow-hidden bg-slate-100 text-[8px] font-bold text-white text-center">
-                                    <div className="bg-[#14665F] flex items-center justify-center" style={{ width: `${stats.winA}%` }}>{stats.winA}%</div>
-                                    <div className="bg-slate-400 flex items-center justify-center" style={{ width: `${stats.draw}%` }}>{stats.draw}%</div>
-                                    <div className="bg-[#072C23] flex items-center justify-center" style={{ width: `${stats.winB}%` }}>{stats.winB}%</div>
-                                  </div>
-                                  <div className="flex justify-between text-[8px] font-bold text-slate-400 uppercase tracking-wider">
-                                    <span>{match.teamA} Win ({stats.winA}%)</span>
-                                    <span>Draw ({stats.draw}%)</span>
-                                    <span>{match.teamB} Win ({stats.winB}%)</span>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-
-                            <button
-                              onClick={() => startEditing(match)}
-                              disabled={isClosed}
-                              className="w-full md:w-auto px-5 py-2 bg-[#14665F]/10 text-[#14665F] hover:bg-[#14665F]/20 font-black text-xs uppercase tracking-widest rounded-xl transition-all duration-200 border border-[#14665F]/20 cursor-pointer"
-                            >
-                              Edit Prediction
-                            </button>
-                          </div>
-                        )}
-
-                        {/* STATE 3: Game Started (Live or Finished) -> FULLY LOCKED */}
-                        {isGameStarted && (
-                          <div className="space-y-3">
-                            <div className="flex items-center justify-between">
-                              <h4 className="text-sm font-black text-slate-400 uppercase tracking-wider">
-                                Predictions Locked
-                              </h4>
-                            </div>
-
-                            {/* Displays users prediction if any */}
-                            {currentPred ? (
-                              <div className="p-4 bg-slate-100/50 rounded-2xl border border-slate-200 space-y-1.5 text-center">
-                                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">Your Lodged Guess</span>
-                                <div className="font-extrabold text-slate-700 items-center justify-center gap-2 flex text-xs">
-                                  <span>{match.teamA}</span>
-                                  <span className="bg-slate-300 text-slate-700 px-2 py-0.5 rounded font-mono text-sm">{currentPred.predictedScoreA}</span>
-                                  <span>-</span>
-                                  <span className="bg-slate-300 text-slate-700 px-2 py-0.5 rounded font-mono text-sm">{currentPred.predictedScoreB}</span>
-                                  <span>{match.teamB}</span>
-                                </div>
-                                {currentPred.firstGoalTime && (
-                                  <span className="text-[10px] block font-semibold text-slate-500">First Goal Guess: {currentPred.firstGoalTime}</span>
-                                )}
-                              </div>
-                            ) : (
-                              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-150 text-center">
-                                <p className="text-slate-400 text-xs font-bold italic">
-                                  You did not lodge predictions for this match before kickoff.
-                                </p>
-                              </div>
-                            )}
-
-                            {/* Consensus recap for started games */}
-                            <div className="space-y-1.5 border-t pt-2.5">
-                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-left">Consensus stats record</p>
-                              {stats.total > 0 ? (
-                                <div className="space-y-1">
-                                  <div className="flex h-3 rounded-full overflow-hidden bg-slate-100 text-[8px] font-bold text-white text-center">
-                                    <div 
-                                      className="bg-[#14665F]/60 flex items-center justify-center transition-all duration-300" 
-                                      style={{ width: `${stats.winA}%` }} 
-                                    >
-                                      {stats.winA}%
-                                    </div>
-                                    <div 
-                                      className="bg-slate-400 flex items-center justify-center transition-all duration-300" 
-                                      style={{ width: `${stats.draw}%` }} 
-                                    >
-                                      {stats.draw}%
-                                    </div>
-                                    <div 
-                                      className="bg-[#072C23]/60 flex items-center justify-center transition-all duration-300" 
-                                      style={{ width: `${stats.winB}%` }} 
-                                    >
-                                      {stats.winB}%
-                                    </div>
-                                  </div>
-                                  <div className="flex justify-between text-[8px] font-bold text-slate-400 uppercase tracking-wider">
-                                    <span>{match.teamA} Win ({stats.winA}%)</span>
-                                    <span>Draw ({stats.draw}%)</span>
-                                    <span>{match.teamB} Win ({stats.winB}%)</span>
-                                  </div>
-                                </div>
-                              ) : (
-                                <div className="text-[9px] text-slate-400 italic font-semibold">No consensus submissions lodged.</div>
-                              )}
-                            </div>
-                          </div>
-                        )}
-
-                      </div>
-                    ) : (
-                      // Interactive editing form
-                      <motion.div
-                        initial={{ opacity: 0, scale: 0.98 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        className="space-y-4"
-                      >
-                        <div className="flex items-center justify-between border-b pb-2 mb-2">
-                          <span className="text-xs font-black text-slate-500 uppercase tracking-widest">
-                            Editing Score Forecast
+                      ) : currentPred ? (
+                        /* ── Saved prediction score ── */
+                        <div className="flex items-center gap-2">
+                          <span className="text-3xl font-black font-mono text-[#14665F]">
+                            {currentPred.predictedScoreA}
                           </span>
-                          <button
-                            onClick={() => setEditingMatchId(null)}
-                            className="text-xs font-bold text-slate-400 hover:text-slate-600 underline"
-                          >
-                            Cancel
-                          </button>
+                          <span className="text-slate-300 font-black text-xl">:</span>
+                          <span className="text-3xl font-black font-mono text-[#14665F]">
+                            {currentPred.predictedScoreB}
+                          </span>
                         </div>
+                      ) : (
+                        /* ── No prediction yet ── */
+                        <span className="text-xs bg-slate-200 text-slate-500 font-black px-4 py-1.5 rounded-full uppercase tracking-wider">
+                          VS
+                        </span>
+                      )}
 
-                        {/* Touch selectors */}
-                        <div className="grid grid-cols-2 gap-4">
-                          <SmartGoalSelector
-                            teamName={match.teamA}
-                            flag={match.flagA}
-                            value={localScoreA}
-                            onChange={setLocalScoreA}
-                          />
-                          <SmartGoalSelector
-                            teamName={match.teamB}
-                            flag={match.flagB}
-                            value={localScoreB}
-                            onChange={setLocalScoreB}
-                          />
-                        </div>
+                      {/* First goal badge (saved state only) */}
+                      {!isEditing && currentPred?.firstGoalTime && (
+                        <span className="text-[9px] font-bold text-slate-400 flex items-center gap-1 mt-1">
+                          <Flame className="w-3 h-3 text-orange-400" />
+                          {currentPred.firstGoalTime}
+                        </span>
+                      )}
+                    </div>
 
-                        {/* Game-specific Spec: Time of First Goal in the Match */}
-                        <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-100 space-y-2">
-                          <div className="flex items-center gap-1.5 justify-between">
-                            <span className="text-[11px] font-black text-[#14665F] uppercase tracking-wider flex items-center gap-1">
-                              <Flame className="w-4 h-4 text-orange-500 fill-orange-500/10" /> Time of First Goal
-                            </span>
-                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">(Match-Specific Spec)</span>
-                          </div>
-                          
-                          <div className="grid grid-cols-3 gap-1.5">
-                            {['1 - 15\'', '16 - 30\'', '31 - 45\'', '46 - 60\'', '61 - 75\'', '76 - 90+\''].map((range) => {
-                              const isSelected = localFirstGoalTime === range;
-                              return (
-                                <button
-                                  key={range}
-                                  type="button"
-                                  onClick={() => setLocalFirstGoalTime(range)}
-                                  className={`py-1.5 px-1 rounded-xl text-[10px] font-black transition-all border ${
-                                    isSelected
-                                      ? 'bg-[#14665F] text-white border-[#14665F] shadow-xs'
-                                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                                  }`}
-                                >
-                                  {range}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-
-                        {/* Save Trigger CTA */}
-                        <div className="pt-2 flex gap-3">
-                          <button
-                            onClick={() => saveLocalPrediction(match.id, match.teamA, match.teamB)}
-                            className="flex-1 flex items-center justify-center gap-2 py-3 bg-[#14665F] text-white hover:bg-[#072C23] rounded-xl font-bold text-xs uppercase tracking-wider transition-all shadow-sm active:scale-95 cursor-pointer"
-                          >
-                            <Save className="w-4 h-4" />
-                            Save Forecast
-                          </button>
-                        </div>
-                      </motion.div>
-                    )}
+                    {/* Team B */}
+                    <div className="flex-1 flex flex-col items-center text-center min-w-0">
+                      <span className="text-5xl leading-none">{match.flagB}</span>
+                      <span className="text-sm font-extrabold text-slate-800 mt-2 truncate w-full px-1">{match.teamB}</span>
+                    </div>
                   </div>
                 </div>
+
+                {/* ── Row 4: First-goal time selector (editing only) ───── */}
+                <AnimatePresence>
+                  {isEditing && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="px-5 overflow-hidden"
+                    >
+                      <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 mb-4 space-y-2">
+                        <span className="text-[10px] font-black text-[#14665F] uppercase tracking-wider flex items-center gap-1">
+                          <Flame className="w-3.5 h-3.5 text-orange-400" />
+                          Time of First Goal
+                        </span>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {["1 - 15'", "16 - 30'", "31 - 45'", "46 - 60'", "61 - 75'", "76 - 90+'"].map((r) => (
+                            <button
+                              key={r}
+                              type="button"
+                              onClick={() => setLocalFirstGoal(localFirstGoal === r ? '' : r)}
+                              className={`py-1.5 rounded-xl text-[10px] font-black border transition-all cursor-pointer ${
+                                localFirstGoal === r
+                                  ? 'bg-[#14665F] text-white border-[#14665F]'
+                                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                              }`}
+                            >
+                              {r}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* ── Row 5: Consensus Stats ────────────────────────────── */}
+                <div className="px-5 pb-4 space-y-2">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                    Guesty Consensus Forecast Stats
+                  </p>
+                  <div className="flex h-2.5 rounded-full overflow-hidden bg-slate-100">
+                    <div className="bg-[#14665F] transition-all duration-500" style={{ width: `${stats.winA}%` }} />
+                    <div className="bg-slate-300 transition-all duration-500" style={{ width: `${stats.draw}%` }} />
+                    <div className="bg-[#072C23] transition-all duration-500" style={{ width: `${stats.winB}%` }} />
+                  </div>
+                  <div className="flex justify-between text-[9px] font-bold text-slate-400 uppercase tracking-wider">
+                    <span>{match.flagA} {stats.winA}%</span>
+                    <span>Draw {stats.draw}%</span>
+                    <span>{stats.winB}% {match.flagB}</span>
+                  </div>
+                </div>
+
+                {/* ── Row 6: CTA ────────────────────────────────────────── */}
+                <div className="px-5 pb-5">
+                  {isEditing ? (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setEditingMatchId(null)}
+                        className="px-4 py-2.5 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl font-bold text-xs cursor-pointer transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => saveLocalPrediction(match.id, match.teamA, match.teamB)}
+                        className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-[#14665F] text-white hover:bg-[#072C23] rounded-xl font-bold text-xs uppercase tracking-wider transition-colors active:scale-95 cursor-pointer"
+                      >
+                        <Save className="w-3.5 h-3.5" /> Save Forecast
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => startEditing(match)}
+                      disabled={isClosed}
+                      className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all active:scale-95 cursor-pointer ${
+                        isClosed
+                          ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                          : currentPred
+                            ? 'bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200'
+                            : 'bg-[#14665F] text-white hover:bg-[#072C23] shadow-sm'
+                      }`}
+                    >
+                      {currentPred ? (
+                        <><Pencil className="w-3.5 h-3.5" /> Edit Score</>
+                      ) : (
+                        'Predict Score'
+                      )}
+                    </button>
+                  )}
+                </div>
+
               </motion.div>
             );
           })
